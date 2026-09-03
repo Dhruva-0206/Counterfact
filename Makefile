@@ -1,4 +1,4 @@
-# RecoverAI task runner. Windows without GNU make: use `.\make.ps1 <target>` (same targets).
+# Counterfact task runner. Windows without GNU make: use `.\make.ps1 <target>` (same targets).
 UV ?= uv
 PY := $(UV) run python
 

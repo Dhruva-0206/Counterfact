@@ -12,8 +12,8 @@ import argparse
 
 import pandas as pd
 
-from recoverai.config import FAILURE_CATEGORIES, get_settings
-from recoverai.eval.report import (
+from counterfact.config import FAILURE_CATEGORIES, get_settings
+from counterfact.eval.report import (
     baseline_table,
     format_table,
     load_variant,

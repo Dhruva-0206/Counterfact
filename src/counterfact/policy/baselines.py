@@ -2,7 +2,7 @@
 
 A policy for evaluation purposes is a function ``DataFrame -> np.ndarray[str]`` returning, per
 row, the name of an action column in the counterfactual table (``y_<name>``). Primitive action
-names come from :func:`recoverai.config.primitive_name`; ``razorpay_default`` is the T+1/T+2/T+3
+names come from :func:`counterfact.config.primitive_name`; ``razorpay_default`` is the T+1/T+2/T+3
 retry schedule and is not one of the five arms.
 """
 
@@ -13,7 +13,7 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
-from recoverai.config import (
+from counterfact.config import (
     ESCALATE_HUMAN,
     NO_ACTION,
     REMIND_AND_RETRY,

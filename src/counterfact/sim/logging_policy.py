@@ -13,8 +13,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from recoverai.config import PRIMITIVE_ACTIONS, PRIMITIVE_INDEX, primitive_name
-from recoverai.policy.baselines import heuristic_actions
+from counterfact.config import PRIMITIVE_ACTIONS, PRIMITIVE_INDEX, primitive_name
+from counterfact.policy.baselines import heuristic_actions
 
 EPSILON = 0.5
 N_PRIMITIVES = len(PRIMITIVE_ACTIONS)

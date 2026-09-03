@@ -7,7 +7,7 @@ Two tables come out of :func:`generate_failures`:
                used to realise coherent counterfactual outcomes. Written to
                ``counterfactuals.parquet`` and never read by ``features/`` or ``models/``.
 
-Nothing here decides outcomes; see :mod:`recoverai.sim.outcome_model`.
+Nothing here decides outcomes; see :mod:`counterfact.sim.outcome_model`.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from recoverai import config
-from recoverai.config import FAILURE_CATEGORIES, FAILURE_MIX, FAILURE_SOURCE, Settings, SimVariant
-from recoverai.sim.schema import Merchant
+from counterfact import config
+from counterfact.config import FAILURE_CATEGORIES, FAILURE_MIX, FAILURE_SOURCE, Settings, SimVariant
+from counterfact.sim.schema import Merchant
 
 MERCHANTS: tuple[Merchant, ...] = (
     Merchant(merchant_id="m_streambox", name="StreamBox OTT", segment="b2c", plan_amount=299,
@@ -240,8 +240,8 @@ def build_dataset(settings: Settings, variant: SimVariant, out_dir: Path | None 
     Writes ``failures.parquet`` (observable + logged action/outcome), ``counterfactuals.parquet``
     (hidden state, uniforms, outcome under every action), ``merchants.parquet`` and ``meta.json``.
     """
-    from recoverai.sim.logging_policy import EPSILON, log_actions
-    from recoverai.sim.outcome_model import OutcomeModel
+    from counterfact.sim.logging_policy import EPSILON, log_actions
+    from counterfact.sim.outcome_model import OutcomeModel
 
     out_dir = out_dir or settings.variant_dir(variant)
     out_dir.mkdir(parents=True, exist_ok=True)

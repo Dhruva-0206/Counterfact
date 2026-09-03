@@ -4,7 +4,7 @@ Everything the agent can see lives in ``obs``; everything here additionally uses
 latent liquidity / engagement / churn intent, a hidden bank-outage duration, a hidden payday
 segment, and the common random numbers (CRN) that realise coherent counterfactual outcomes.
 
-A *plan* (see :class:`recoverai.sim.schema.Plan`) is a bounded set of retries, at most one
+A *plan* (see :class:`counterfact.sim.schema.Plan`) is a bounded set of retries, at most one
 reminder message, and an optional escalation. The realised outcome for a plan is a
 deterministic function of (obs, hidden, plan), so any policy can be evaluated exactly on the
 counterfactual table without re-simulating.
@@ -20,7 +20,7 @@ Variants
                   self-serve, messages do not lift, escalation resolves nothing). Messages can
                   still cause churn. The correct policy is to abstain.
 
-This module must never be imported by ``recoverai.features`` or ``recoverai.models``.
+This module must never be imported by ``counterfact.features`` or ``counterfact.models``.
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from recoverai.config import PRIMITIVE_ACTIONS, SimVariant, primitive_name
-from recoverai.sim.schema import RAZORPAY_DEFAULT_PLAN, Plan, plan_for
+from counterfact.config import PRIMITIVE_ACTIONS, SimVariant, primitive_name
+from counterfact.sim.schema import RAZORPAY_DEFAULT_PLAN, Plan, plan_for
 
 RETRY_T = np.array([0.0, 1.0, 2.0, 3.0, 7.0])
 P_MAX = 0.98

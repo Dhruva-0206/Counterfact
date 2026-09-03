@@ -14,9 +14,9 @@ import time
 
 import numpy as np
 
-from recoverai.config import SIM_VARIANTS, get_settings
-from recoverai.sim.generator import build_dataset, generate_customers, generate_failures
-from recoverai.sim.outcome_model import RETRY_SCALE, calibrate_retry_scale
+from counterfact.config import SIM_VARIANTS, get_settings
+from counterfact.sim.generator import build_dataset, generate_customers, generate_failures
+from counterfact.sim.outcome_model import RETRY_SCALE, calibrate_retry_scale
 
 
 def main() -> None:

@@ -6,11 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from recoverai.config import FAILURE_MIX, PRIMITIVE_ACTIONS, primitive_name
-from recoverai.sim.generator import generate_customers, generate_failures
-from recoverai.sim.logging_policy import EPSILON, N_PRIMITIVES, log_actions
-from recoverai.sim.outcome_model import OutcomeModel
-from recoverai.sim.schema import RAZORPAY_DEFAULT_PLAN, plan_for
+from counterfact.config import FAILURE_MIX, PRIMITIVE_ACTIONS, primitive_name
+from counterfact.sim.generator import generate_customers, generate_failures
+from counterfact.sim.logging_policy import EPSILON, N_PRIMITIVES, log_actions
+from counterfact.sim.outcome_model import OutcomeModel
+from counterfact.sim.schema import RAZORPAY_DEFAULT_PLAN, plan_for
 
 N = 4_000
 

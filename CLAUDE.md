@@ -1,7 +1,7 @@
-# CLAUDE.md — RecoverAI project memory
+# CLAUDE.md — Counterfact project memory
 
 ## 1. Purpose
-RecoverAI recovers failed **subscription payments** for SaaS merchants on Razorpay. For every failed payment it predicts the *incremental* recovery probability of each intervention, prices the intervention against its costs (message cost, ops cost, contact fatigue), executes the best one under hard guardrails, and proves impact with randomized A/B and off-policy evaluation. Built for the Razorpay AI Buildathon 2026, AI Revenue Recovery track.
+Counterfact recovers failed **subscription payments** for SaaS merchants on Razorpay. For every failed payment it predicts the *incremental* recovery probability of each intervention, prices the intervention against its costs (message cost, ops cost, contact fatigue), executes the best one under hard guardrails, and proves impact with randomized A/B and off-policy evaluation. Built for the Razorpay AI Buildathon 2026, AI Revenue Recovery track.
 
 **Differentiator:** "Do nothing" is a first-class action with its own expected value. Every action is priced against the counterfactual, and we report the cost of intervening when we shouldn't have (wasted contacts).
 
@@ -45,7 +45,7 @@ Three simulator variants (`calibrated`, `misspecified`, `null_uplift`) share the
 | `make test` | pytest | ~30 s |
 | `make lint` | ruff | seconds |
 
-Everything is seeded (`RECOVERAI_SEED`, default 42) and regenerable from scratch with `make all`.
+Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scratch with `make all`.
 
 ## 5. Key decisions (full log: `docs/DECISIONS.md`)
 - Five-arm action space, fixed: `no_action, retry_now, retry_delayed(d∈{1,3,7}), remind_and_retry, escalate_human`.

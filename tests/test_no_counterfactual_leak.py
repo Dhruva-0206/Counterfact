@@ -2,7 +2,7 @@
 
 Two layers:
 1. Static: no module under ``features/`` or ``models/`` mentions ``counterfactuals`` or imports
-   ``recoverai.sim.outcome_model``.
+   ``counterfact.sim.outcome_model``.
 2. Dynamic (added with Phase 2): ``build_features`` / ``train`` run with ``pandas.read_parquet``
    patched to raise on any path containing ``counterfactuals``.
 """
@@ -12,11 +12,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "recoverai"
+SRC = Path(__file__).resolve().parents[1] / "src" / "counterfact"
 FORBIDDEN_PATTERNS = (
     re.compile(r"counterfactuals"),
-    re.compile(r"recoverai\.sim\.outcome_model"),
-    re.compile(r"from recoverai\.sim import .*outcome_model"),
+    re.compile(r"counterfact\.sim\.outcome_model"),
+    re.compile(r"from counterfact\.sim import .*outcome_model"),
     re.compile(r"\by_no_action\b|\bp_no_action\b|\bu_att\d\b|\bz_liquidity\b|\bz_engagement\b"),
 )
 

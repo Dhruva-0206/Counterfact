@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from recoverai.config import SIM_VARIANTS, Settings, SimVariant, get_settings
-from recoverai.policy.baselines import BASELINES, Policy
+from counterfact.config import SIM_VARIANTS, Settings, SimVariant, get_settings
+from counterfact.policy.baselines import BASELINES, Policy
 
 PER = 1_000
 

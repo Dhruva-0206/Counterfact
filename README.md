@@ -1,4 +1,4 @@
-# RecoverAI
+# Counterfact
 
 Net-expected-value recovery of failed subscription payments for Razorpay merchants.
 **"Do nothing" is a first-class action with its own expected value.**

@@ -121,7 +121,7 @@ class Settings(BaseModel):
 
 
 def get_settings(env_file: Path | None = ROOT / ".env") -> Settings:
-    """Build :class:`Settings` from ``RECOVERAI_*`` / credential env vars with .env fallback."""
+    """Build :class:`Settings` from ``COUNTERFACT_*`` / credential env vars with .env fallback."""
     env = {**_load_dotenv(env_file), **os.environ} if env_file else dict(os.environ)
     kw: dict[str, object] = {}
 
@@ -129,16 +129,16 @@ def get_settings(env_file: Path | None = ROOT / ".env") -> Settings:
         if key in env and env[key] != "":
             kw[field] = env[key]
 
-    pick("RECOVERAI_SEED", "seed")
-    pick("RECOVERAI_SIM_VARIANT", "sim_variant")
-    pick("RECOVERAI_N_FAILURES", "n_failures")
-    pick("RECOVERAI_N_CUSTOMERS", "n_customers")
-    pick("RECOVERAI_EXECUTOR", "executor")
-    pick("RECOVERAI_EXECUTOR_FAILURE_RATE", "executor_failure_rate")
+    pick("COUNTERFACT_SEED", "seed")
+    pick("COUNTERFACT_SIM_VARIANT", "sim_variant")
+    pick("COUNTERFACT_N_FAILURES", "n_failures")
+    pick("COUNTERFACT_N_CUSTOMERS", "n_customers")
+    pick("COUNTERFACT_EXECUTOR", "executor")
+    pick("COUNTERFACT_EXECUTOR_FAILURE_RATE", "executor_failure_rate")
     pick("RAZORPAY_KEY_ID", "razorpay_key_id")
     pick("RAZORPAY_KEY_SECRET", "razorpay_key_secret")
     pick("RAZORPAY_WEBHOOK_SECRET", "razorpay_webhook_secret")
     pick("ANTHROPIC_API_KEY", "anthropic_api_key")
-    pick("RECOVERAI_DATA_DIR", "data_dir")
-    pick("RECOVERAI_REPORTS_DIR", "reports_dir")
+    pick("COUNTERFACT_DATA_DIR", "data_dir")
+    pick("COUNTERFACT_REPORTS_DIR", "reports_dir")
     return Settings(**kw)  # type: ignore[arg-type]

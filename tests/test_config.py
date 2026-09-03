@@ -1,6 +1,6 @@
 """Scaffold smoke tests: vocabularies are fixed and settings load without a .env file."""
 
-from recoverai import config
+from counterfact import config
 
 
 def test_exactly_five_arms() -> None:
@@ -21,6 +21,6 @@ def test_settings_defaults(tmp_path) -> None:
 
 def test_dotenv_parsing(tmp_path) -> None:
     env = tmp_path / ".env"
-    env.write_text('RECOVERAI_SEED=7\nRECOVERAI_EXECUTOR_FAILURE_RATE=0.2  # comment\n# x\n')
+    env.write_text('COUNTERFACT_SEED=7\nCOUNTERFACT_EXECUTOR_FAILURE_RATE=0.2  # comment\n# x\n')
     s = config.get_settings(env_file=env)
     assert s.seed == 7 and s.executor_failure_rate == 0.2
