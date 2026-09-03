@@ -10,7 +10,7 @@ from counterfact.config import FAILURE_MIX, PRIMITIVE_ACTIONS, primitive_name
 from counterfact.sim.generator import generate_customers, generate_failures
 from counterfact.sim.logging_policy import EPSILON, N_PRIMITIVES, log_actions
 from counterfact.sim.outcome_model import OutcomeModel
-from counterfact.sim.schema import RAZORPAY_DEFAULT_PLAN, plan_for
+from counterfact.sim.schema import MAX_RETRIES, RAZORPAY_DEFAULT_PLAN, plan_for
 
 N = 4_000
 
@@ -63,11 +63,21 @@ def test_probabilities_bounded_and_coherent(population) -> None:
     # realised outcomes are Bernoulli(p): the mean must be close to the mean probability
     for name in ("no_action", "retry_now", "razorpay_default"):
         assert abs(cf[f"y_{name}"].mean() - cf[f"p_{name}"].mean()) < 0.03
-    # three retries dominate one retry at the same delay, in probability
-    assert (cf["p_razorpay_default"] >= cf["p_retry_delayed_1"] - 1e-12).all()
+    # ADR-006: the Razorpay default schedule IS retry_delayed(1) under the equalized budget
+    np.testing.assert_allclose(cf["p_razorpay_default"], cf["p_retry_delayed_1"], atol=1e-12)
+    assert (cf["y_razorpay_default"] == cf["y_retry_delayed_1"]).all()
+    # any retry arm weakly dominates doing nothing, in probability
+    for name in ("retry_now", "retry_delayed_1", "retry_delayed_3", "retry_delayed_7"):
+        assert (cf[f"p_{name}"] >= cf["p_no_action"] - 1e-12).all()
+    # attempt cap: with two prior attempts only one retry remains, so p(retry_now) sits
+    # strictly below the first-attempt level for the same category (gateway_5xx is the cleanest)
+    g5 = obs.failure_category == "gateway_5xx"
+    first, third = g5 & (obs.attempt_number == 1), g5 & (obs.attempt_number == 3)
+    assert cf.loc[first, "p_retry_now"].mean() > cf.loc[third, "p_retry_now"].mean() + 0.05
     # retrying an expired card is worthless; escalation is not
     ce = obs.failure_category == "card_expired"
-    assert cf.loc[ce, "p_retry_now"].mean() - cf.loc[ce, "p_no_action"].mean() < 0.02
+    # (three attempts against the 3% issuer-updater share buys at most ~2-3 points)
+    assert cf.loc[ce, "p_retry_now"].mean() - cf.loc[ce, "p_no_action"].mean() < 0.03
     assert cf.loc[ce, "p_escalate_human"].mean() > cf.loc[ce, "p_no_action"].mean() + 0.2
 
 
@@ -81,10 +91,14 @@ def test_null_uplift_has_no_treatment_effect(population) -> None:
     assert (cf["p_remind_and_retry"] <= base + 1e-12).all()
 
 
-def test_plans_are_bounded() -> None:
+def test_plans_are_bounded_and_budget_equalized() -> None:
     assert plan_for(0).n_retries == 0
-    assert all(plan_for(a, d).n_retries <= 1 for a, d in PRIMITIVE_ACTIONS)
-    assert RAZORPAY_DEFAULT_PLAN.n_retries == 3
+    assert all(plan_for(a, d).n_retries <= MAX_RETRIES for a, d in PRIMITIVE_ACTIONS)
+    # every retry arm gets the same three-attempt budget, two days apart (ADR-006)
+    assert plan_for(1).retry_days == (0.0, 2.0, 4.0)
+    assert plan_for(2, 3).retry_days == (3.0, 5.0, 7.0)
+    assert plan_for(3).retry_days == (1.0, 3.0, 5.0) and plan_for(3).message
+    assert RAZORPAY_DEFAULT_PLAN == plan_for(2, 1)
     assert not plan_for(4).retry_days and plan_for(4).escalate
 
 

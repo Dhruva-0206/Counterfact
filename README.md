@@ -9,18 +9,19 @@ Razorpay AI Buildathon 2026, AI Revenue Recovery track.
 
 ## Phase 1 results: baselines under three simulator variants
 Per 1,000 failed payments, seed 42, 50,000 failures. `razorpay_default` is Razorpay's automatic
-T+1 / T+2 / T+3 retry schedule; it is calibrated to the public 55-65% recovery band under
-`calibrated` and lands there under `misspecified` without re-tuning. Under `null_uplift` no
-intervention has any causal effect, so the right answer is to abstain.
+retry schedule after a failed subscription charge; under the equalized attempt budget (ADR-006)
+it is exactly our `retry_delayed(1)` action (attempts at days 1, 3, 5), calibrated to the public
+55-65% recovery band under `calibrated` and inside it under `misspecified` without re-tuning.
+Under `null_uplift` no intervention has any causal effect, so the right answer is to abstain.
 
 | variant | policy | raw recovery | Rs recovered /1k | Rs incr. vs no_action /1k | contacts /1k | wasted contacts /1k | escalations /1k |
 |---|---|---|---|---|---|---|---|
 | calibrated | no_action | 23.9% | 2,146,287 | 0 | 0 | 0 | 0 |
-| calibrated | razorpay_default | 60.1% | 4,510,222 | 2,363,935 | 0 | 0 | 0 |
-| calibrated | heuristic | 59.2% | 4,531,191 | 2,384,904 | 450 | 140 | 179 |
+| calibrated | razorpay_default | 60.0% | 4,514,448 | 2,368,161 | 0 | 0 | 0 |
+| calibrated | heuristic | 68.4% | 5,077,412 | 2,931,125 | 450 | 140 | 179 |
 | misspecified | no_action | 23.1% | 2,324,649 | 0 | 0 | 0 | 0 |
-| misspecified | razorpay_default | 57.7% | 4,456,504 | 2,131,855 | 0 | 0 | 0 |
-| misspecified | heuristic | 60.4% | 4,661,918 | 2,337,269 | 450 | 142 | 179 |
+| misspecified | razorpay_default | 58.0% | 4,481,552 | 2,156,902 | 0 | 0 | 0 |
+| misspecified | heuristic | 67.9% | 5,081,791 | 2,757,142 | 450 | 142 | 179 |
 | null_uplift | no_action | 23.9% | 2,146,287 | 0 | 0 | 0 | 0 |
 | null_uplift | razorpay_default | 23.9% | 2,146,287 | 0 | 0 | 0 | 0 |
 | null_uplift | heuristic | 23.7% | 2,127,730 | -18,556 | 450 | 140 | 179 |

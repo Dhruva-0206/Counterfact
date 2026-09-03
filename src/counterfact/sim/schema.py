@@ -136,22 +136,39 @@ class Outcome(BaseModel):
     escalated: bool
 
 
+MAX_RETRIES = 3
+"""Hard cap on retry attempts per failed payment (ADR-006); enforced again by the guardrails."""
+RETRY_SPACING_DAYS = 2.0
+
+
+def retry_schedule(anchor_days: float) -> tuple[float, ...]:
+    """Bounded retry schedule anchored at ``anchor_days``: attempts at d, d+2, d+4 (ADR-006)."""
+    return tuple(anchor_days + RETRY_SPACING_DAYS * k for k in range(MAX_RETRIES))
+
+
 def plan_for(arm: int, delay_days: int = 0) -> Plan:
-    """Map an arm (and delay parameter) to its bounded execution plan."""
+    """Map an arm (and delay parameter) to its bounded execution plan.
+
+    Every retry arm gets the same attempt budget (three attempts, two days apart), so the Razorpay
+    default schedule is exactly ``retry_delayed(1)`` and lies inside the action space.
+    """
     if arm == NO_ACTION:
         return Plan()
     if arm == RETRY_NOW:
-        return Plan(retry_days=(0.0,))
+        return Plan(retry_days=retry_schedule(0.0))
     if arm == RETRY_DELAYED:
         if delay_days not in RETRY_DELAYS:
             raise ValueError(f"delay_days must be one of {RETRY_DELAYS}")
-        return Plan(retry_days=(float(delay_days),))
+        return Plan(retry_days=retry_schedule(float(delay_days)))
     if arm == REMIND_AND_RETRY:
-        return Plan(retry_days=(1.0,), message=True)
+        return Plan(retry_days=retry_schedule(1.0), message=True)
     if arm == ESCALATE_HUMAN:
         return Plan(escalate=True)
     raise ValueError(f"unknown arm {arm}")
 
 
-RAZORPAY_DEFAULT_PLAN = Plan(retry_days=(1.0, 2.0, 3.0))
-"""Razorpay's default behaviour on a failed subscription charge: retries at T+1, T+2, T+3."""
+RAZORPAY_DEFAULT_PLAN = plan_for(RETRY_DELAYED, 1)
+"""Razorpay's default behaviour on a failed subscription charge under the equalized budget:
+three automatic retries starting at T+1 (days 1, 3, 5). The literal T+1/T+2/T+3 spacing is kept
+as the ``razorpay_t123`` sensitivity action."""
+RAZORPAY_T123_PLAN = Plan(retry_days=(1.0, 2.0, 3.0))

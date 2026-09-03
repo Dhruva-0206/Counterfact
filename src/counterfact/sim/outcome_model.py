@@ -25,17 +25,36 @@ This module must never be imported by ``counterfact.features`` or ``counterfact.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from counterfact.config import PRIMITIVE_ACTIONS, SimVariant, primitive_name
-from counterfact.sim.schema import RAZORPAY_DEFAULT_PLAN, Plan, plan_for
+from counterfact.sim.schema import (
+    MAX_RETRIES,
+    RAZORPAY_DEFAULT_PLAN,
+    RAZORPAY_T123_PLAN,
+    Plan,
+    plan_for,
+)
 
 RETRY_T = np.array([0.0, 1.0, 2.0, 3.0, 7.0])
 P_MAX = 0.98
 MONEY_CATEGORIES = ("insufficient_funds", "mandate_failed", "auth_failed")
+RETRY_FIXABLE = ("insufficient_funds", "bank_technical", "gateway_5xx", "auth_failed", "mandate_failed")
+"""Categories where a retry is the natural fix; their escalation resolve rate is a sensitivity axis."""
+
+SENSITIVITY_KEYS = (
+    "esc_level",        # escalation resolve rate for RETRY_FIXABLE categories (absolute)
+    "retry_scale_mult",  # multiplier on the calibrated retry scale
+    "self_mult",        # multiplier on self-serve probability
+    "msg_lift_mult",    # multiplier on (reminder lift - 1)
+    "churn_mult",       # multiplier on reminder-induced churn hazard
+    "decay",            # per-attempt decay (absolute)
+    "payday_mult",      # multiplier on (payday boost - 1)
+)
 
 
 @dataclass(frozen=True)
@@ -89,7 +108,7 @@ CALIBRATED: dict[str, CategoryParams] = {
 
 # Global multiplier on retry success, tuned by `calibrate_retry_scale` so that the Razorpay
 # default schedule recovers ~60% under `calibrated`. See docs/EVALUATION.md.
-RETRY_SCALE: dict[str, float] = {"calibrated": 1.3133, "misspecified": 1.3133, "null_uplift": 1.3133}
+RETRY_SCALE: dict[str, float] = {"calibrated": 1.3727, "misspecified": 1.3727, "null_uplift": 1.3727}
 ATTEMPT_DECAY: dict[str, float] = {"calibrated": 0.85, "misspecified": 0.70, "null_uplift": 0.85}
 BANK_RETRY_OK, BANK_RETRY_DOWN = 0.75, 0.06
 
@@ -120,30 +139,62 @@ class Components:
     retry_scale: float
 
     def retry_p(self, t: float, k: int) -> np.ndarray:
-        """P(the k-th retry of the plan, executed at day ``t``, succeeds | retries can succeed)."""
-        t_idx = np.searchsorted(RETRY_T, t)
-        if t_idx < len(RETRY_T) and RETRY_T[t_idx] == t:
-            base = self.base_retry[:, t_idx]
-        else:  # linear interpolation for delays not on the grid
-            base = np.array([np.interp(t, RETRY_T, row) for row in self.base_retry])
+        """P(the k-th retry of the plan, executed at day ``t``, succeeds | retries can succeed).
+
+        Attempts beyond the per-failure budget (``MAX_RETRIES`` minus prior attempts) never run,
+        so their success probability is zero (ADR-006 attempt cap).
+        """
+        base = _interp_rows(t, self.base_retry)
         bank = np.where(24.0 * t + 0.5 >= self.outage_hours, BANK_RETRY_OK, BANK_RETRY_DOWN)
         base = np.where(self.is_bank, bank, base)
         boost = np.where(self.days_to_payday <= t, self.payday_boost, 1.0)
         decay = self.decay ** (self.attempt - 1 + k - 1)
-        return np.clip(base * self.liq * boost * decay * self.retry_scale, 0.0, P_MAX)
+        allowed = (k <= MAX_RETRIES + 1 - self.attempt).astype(float)
+        return np.clip(base * self.liq * boost * decay * self.retry_scale * allowed, 0.0, P_MAX)
+
+
+def _interp_rows(t: float, table: np.ndarray) -> np.ndarray:
+    """Row-wise linear interpolation of ``table`` (n, len(RETRY_T)) at time ``t``; flat beyond 7d."""
+    if t >= RETRY_T[-1]:
+        return table[:, -1]
+    if t <= RETRY_T[0]:
+        return table[:, 0]
+    i = int(np.searchsorted(RETRY_T, t))
+    if RETRY_T[i] == t:
+        return table[:, i]
+    w = (t - RETRY_T[i - 1]) / (RETRY_T[i] - RETRY_T[i - 1])
+    return table[:, i - 1] * (1 - w) + table[:, i] * w
 
 
 class OutcomeModel:
     """True outcome process for one simulator variant."""
 
-    def __init__(self, variant: SimVariant, retry_scale: float | None = None) -> None:
+    def __init__(
+        self,
+        variant: SimVariant,
+        retry_scale: float | None = None,
+        overrides: dict[str, float] | None = None,
+    ) -> None:
+        """``overrides`` are sensitivity knobs (see ``SENSITIVITY_KEYS``); unknown keys raise."""
         self.variant = variant
-        self.retry_scale = RETRY_SCALE[variant] if retry_scale is None else retry_scale
+        self.overrides = dict(overrides or {})
+        bad = set(self.overrides) - set(SENSITIVITY_KEYS)
+        if bad:
+            raise ValueError(f"unknown sensitivity overrides: {sorted(bad)}")
+        base_scale = RETRY_SCALE[variant] if retry_scale is None else retry_scale
+        self.retry_scale = base_scale * self.overrides.get("retry_scale_mult", 1.0)
+        self.decay = self.overrides.get("decay", ATTEMPT_DECAY[variant])
         self.params = dict(CALIBRATED)
+        esc_level = self.overrides.get("esc_level")
+        if esc_level is not None:
+            self.params = {
+                c: (dataclasses.replace(p, esc0=esc_level) if c in RETRY_FIXABLE else p)
+                for c, p in self.params.items()
+            }
         if variant == "misspecified":
             prng = np.random.default_rng(7)
             perturbed: dict[str, CategoryParams] = {}
-            for cat, p in CALIBRATED.items():
+            for cat, p in self.params.items():
                 m = prng.uniform(0.8, 1.2, size=3)
                 perturbed[cat] = CategoryParams(
                     hard=p.hard, self0=p.self0 * m[0],
@@ -217,6 +268,16 @@ class OutcomeModel:
             churn = self._per_cat(cat, "churn0") * (0.5 + 1.5 * churn_intent) * (1 + 0.6 * contacts7)
             days_to_payday = obs["days_to_payday"].to_numpy()
 
+        # sensitivity knobs (identity by default)
+        p_self = p_self * self.overrides.get("self_mult", 1.0)
+        m = self.overrides.get("msg_lift_mult", 1.0)
+        lift_self = 1 + (lift_self - 1) * m
+        lift_retry = 1 + (lift_retry - 1) * m
+        churn = churn * self.overrides.get("churn_mult", 1.0)
+        payday_boost = 1 + (self._per_cat(cat, "payday_boost") - 1) * self.overrides.get(
+            "payday_mult", 1.0
+        )
+
         p_esc = (
             self._per_cat(cat, "esc0")
             * np.where(is_b2b, 1.15, 1.0)
@@ -241,12 +302,12 @@ class OutcomeModel:
             p_esc=np.clip(p_esc, 0, P_MAX),
             attempt=attempt,
             base_retry=base_retry,
-            payday_boost=self._per_cat(cat, "payday_boost"),
+            payday_boost=payday_boost,
             days_to_payday=days_to_payday.astype(float),
             is_bank=cat == "bank_technical",
             outage_hours=hidden["outage_hours"].to_numpy(),
             liq=liq,
-            decay=ATTEMPT_DECAY[v],
+            decay=self.decay,
             retry_scale=self.retry_scale,
         )
 
@@ -294,7 +355,8 @@ class OutcomeModel:
     def plans(self) -> dict[str, Plan]:
         """Every action the evaluator can score: 7 primitives + the Razorpay default schedule."""
         out = {primitive_name(a, d): plan_for(a, d) for a, d in PRIMITIVE_ACTIONS}
-        out["razorpay_default"] = RAZORPAY_DEFAULT_PLAN
+        out["razorpay_default"] = RAZORPAY_DEFAULT_PLAN  # alias of retry_delayed_1 (ADR-006)
+        out["razorpay_t123"] = RAZORPAY_T123_PLAN  # literal T+1/T+2/T+3 spacing, sensitivity only
         return out
 
     def counterfactual_table(self, obs: pd.DataFrame, hidden: pd.DataFrame) -> pd.DataFrame:

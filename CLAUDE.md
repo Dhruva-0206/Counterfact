@@ -51,15 +51,17 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 - Five-arm action space, fixed: `no_action, retry_now, retry_delayed(d∈{1,3,7}), remind_and_retry, escalate_human`.
 - **No discount arms** (creates an incentive to let payments fail).
 - **T-learner** (one LightGBM per arm) over S-learner: per-arm models cannot regularize the treatment effect away, and each arm has distinct support in the logs.
-- **Razorpay default (T+1/T+2/T+3 retries) is the headline baseline**, not no-intervention.
+- **Razorpay default is the headline baseline**, not no-intervention. Headline column: Rs incremental vs `razorpay_default` per 1k; vs `no_action` second; abstention rate under all variants.
+- **Equalized attempt budget (ADR-006):** every retry arm is a 3-attempt schedule (d, d+2, d+4) capped by the 3-retry guardrail; `razorpay_default` == `retry_delayed(1)` so the baseline lies inside the action space. Literal T+1/T+2/T+3 kept as `razorpay_t123` sensitivity action.
 - Three simulator variants; `null_uplift` must produce ≥80% no-action — a headline result.
 - **LLM is explanation-only**; it never chooses an arm; output validated against the allowed action set.
 - One decision per failed payment; each arm is a bounded plan executed over a 14-day window.
+- Every simulator assumption that moves the headline is a sensitivity knob (`OutcomeModel(overrides=...)`) with a row in `docs/EVALUATION.md`.
 
 ## 6. Current status
-**Done:** Phase 0 scaffold. Phase 1: seeded generator (5 merchants, 8k customers, 50k failures), true outcome process with three variants and common random numbers, calibrated so Razorpay default recovers ~60%, epsilon-uniform logging policy with propensities, baselines (`no_action`, `razorpay_default`, `heuristic`), counterfactual-leak test, Checkpoint 1 table (`scripts/checkpoint1.py`).
-**In progress:** awaiting Checkpoint 1 confirmation.
-**Next:** Phase 2 features + T-learner + net-EV policy + guardrails + A/B (Checkpoint 2).
+**Done:** Phase 0 scaffold. Renamed to Counterfact and pushed to GitHub (origin = Dhruva-0206/Counterfact). ADR-006 equalized attempt budget with recalibration (RETRY_SCALE 1.3727). Phase 1: seeded generator (5 merchants, 8k customers, 50k failures), true outcome process with three variants and common random numbers, calibrated so Razorpay default recovers ~60%, epsilon-uniform logging policy with propensities, baselines (`no_action`, `razorpay_default`, `heuristic`), counterfactual-leak test, Checkpoint 1 table (`scripts/checkpoint1.py`).
+**In progress:** Phase 2 (features, T-learner, net-EV policy, guardrails, A/B, sensitivity table).
+**Next:** Checkpoint 2 table.
 **Known bugs:** none.
 **Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 
