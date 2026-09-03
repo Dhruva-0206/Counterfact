@@ -82,7 +82,7 @@ class Agent:
                 action_name=guard.action_name, arm=guard.arm, delay_days=guard.delay_days,
                 amount=float(rec["amount"]), effective_retries=guard.effective_retries,
                 message_send_at=guard.message_send_at,
-                payload={k: rec.get(k) for k in ("customer_id", "invoice_id", "token_id", "order_id") if k in rec},
+                payload={k: rec[k] for k in ("customer_id", "invoice_id", "token_id", "order_id") if _present(rec.get(k))},
             )
             result = self.executor.execute(req)
             if result.status == "queued":
@@ -153,6 +153,16 @@ class Agent:
             "executor_result": result.to_dict(),
             "outcome": None,
         }
+
+
+def _present(v: Any) -> bool:
+    """True for a usable scalar (not None / NaN / NA / empty string)."""
+    if v is None or (isinstance(v, str) and not v):
+        return False
+    try:
+        return not bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return True
 
 
 def context_from_row(rec: dict[str, Any]) -> Context:

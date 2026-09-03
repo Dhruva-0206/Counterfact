@@ -50,6 +50,10 @@ def main() -> None:
     ap.add_argument("--customer-id", default=None)
     ap.add_argument("--token-id", default=None)
     ap.add_argument("--invoice-id", default=None)
+    ap.add_argument("--max-amount", type=float, default=None, help="only events with amount <= this (live token caps)")
+    ap.add_argument("--tokenized-events", type=int, default=0,
+                    help="live executor: route the first N events through the tokenised recurring mode "
+                         "(customer/token from data/razorpay_test.json['recurring'] unless given)")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -59,7 +63,8 @@ def main() -> None:
     store = AuditStore(audit_dir)
     injector = FailureInjector(flag_path=INJECT_FLAG)
     if settings.executor == "razorpay":
-        executor = build_executor(settings, store, injector=injector, backoff_base=0.5)
+        # the fault is injected inside the live createRecurring call path, not before it
+        executor = build_executor(settings, store, injector=None, live_injector=injector, backoff_base=0.5)
     else:
         executor = MockExecutor(
             store,
@@ -71,6 +76,9 @@ def main() -> None:
     agent = Agent(model, merchants, executor, store)
 
     df, cf = holdout_frame(settings, variant)
+    if args.max_amount is not None:
+        keep = (df["amount"] <= args.max_amount).to_numpy()
+        df, cf = df[keep].reset_index(drop=True), cf[keep].reset_index(drop=True)
     df, cf = df.head(args.n).reset_index(drop=True), cf.head(args.n).reset_index(drop=True)
     if args.subscription_id:  # live executor: every event acts on the real test subscription
         df = df.copy()
@@ -78,12 +86,31 @@ def main() -> None:
         for col, val in (("customer_id", args.customer_id), ("token_id", args.token_id), ("invoice_id", args.invoice_id)):
             if val:
                 df[col] = val
+    if args.tokenized_events > 0:  # mode 1 on the first N events, mode 2 on the rest
+        import json as _json
+        rec = {}
+        state_path = ROOT / "data" / "razorpay_test.json"
+        if state_path.exists():
+            rec = _json.loads(state_path.read_text()).get("recurring", {})
+        cust, tok = args.customer_id or rec.get("customer_id"), args.token_id or rec.get("token_id")
+        if not (cust and tok):
+            raise SystemExit("--tokenized-events needs a registered token: run scripts/razorpay_token.py first")
+        df = df.copy()
+        df["token_id"] = [tok if i < args.tokenized_events else "" for i in range(len(df))]
+        df["customer_id"] = [cust if i < args.tokenized_events else c for i, c in enumerate(df["customer_id"])]
     inject_at = args.inject_at if args.inject_at is not None else args.n // 2
 
     t0 = time.time()
     handled = []
     # process in two halves so the injection lands mid-batch and the loop visibly continues
-    if args.inject_failure:
+    if args.inject_failure and args.tokenized_events > 0:
+        # live: first tokenised event fails once at the transport layer then succeeds on backoff;
+        # second tokenised event exhausts the budget -> queued -> re-driven under the same key
+        injector.arm(1)
+        handled += agent.handle_batch(df.iloc[:1])
+        injector.arm(executor.max_api_retries)
+        handled += agent.handle_batch(df.iloc[1:])
+    elif args.inject_failure:
         handled += agent.handle_batch(df.iloc[:inject_at])
         injector.arm(executor.max_api_retries)  # enough 5xx to exhaust backoff -> queued
         handled += agent.handle_batch(df.iloc[inject_at:])
@@ -116,6 +143,8 @@ def main() -> None:
     print(f"  executor ledger {m['executor']}  injected 5xx fired {injector.fired}  "
           f"queued mid-batch {len(queued_before)}  re-driven {len(redriven)}")
     print(f"  duplicate charges: {dup_charges}  (events charged more than once; must be 0)")
+    if executor.name == "razorpay":
+        print("  live charges: verify with `python scripts/verify_charges.py --audit-dir <dir>` (payment.all on the token)")
     transient = [e for e in executor.log if e['status'] == 'transient']
     if transient:
         print(f"  first transient error: {transient[0]}")

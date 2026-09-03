@@ -166,8 +166,9 @@ class BaseExecutor:
                     return result
                 self._sleep(self.backoff_base * (2 ** (attempts - 1)))
             except PermanentError as e:
+                request = getattr(e, "request", {}) or {}
                 result = ExecutorResult(status="failed", attempts=attempts, error=str(e),
-                                        detail={"request": getattr(e, "request", {})})
+                                        detail={"request": request, "mode": request.get("mode")})
                 self.ledger.finish(req.idempotency_key, "failed", attempts, result.to_dict())
                 return result
 
@@ -213,34 +214,65 @@ class MockExecutor(BaseExecutor):
 
 
 class RazorpayExecutor(BaseExecutor):
-    """Razorpay test-mode executor. Maps arms to real SDK calls; idempotency is ours, not Razorpay's.
+    """Razorpay test-mode executor with two explicit modes (ADR-015):
 
-    Razorpay's Subscriptions product has no merchant-initiated charge or retry endpoint: Razorpay
-    itself retries a ``pending`` subscription on its own schedule, and a ``halted`` one needs the
-    customer to pay the outstanding invoice. So (ADR-015):
+    **Mode 1, tokenised recurring** (event carries ``customer_id`` + ``token_id`` from a card /
+    UPI mandate registered through the Recurring Payments product): the agent executes the charge
+    itself: ``order.create`` with ``receipt = idempotency_key`` and ``payment_capture = 1``, then
+    ``payment.createRecurring`` on the token. Before charging, orders carrying the same receipt are
+    checked for an existing payment, so a retry after a lost response never charges twice.
+    Later attempts in the arm's schedule belong to the sequencer.
 
-    * retry arms -> if the event carries a saved ``token_id`` + ``customer_id`` + ``order_id``
-      (Recurring Payments product), ``payment.createRecurring`` charges the token again;
-      otherwise the retry is Razorpay's own (there is no merchant-initiated retry on the
-      Subscriptions product): the outstanding invoice and its pay link are recorded via
-      ``invoice.all(subscription_id)`` and the action is marked ``deferred``. No outstanding
-      invoice (subscription not yet authenticated) -> ``skipped`` with the reason.
-    * remind_and_retry -> ``invoice.notify_by`` on the outstanding invoice; Razorpay rejects this on
-      subscription-generated invoices without a customer contact, in which case the exact error and
-      the pay link are recorded and the action is ``deferred`` to the merchant's own channel.
-    * escalate_human -> ``subscription.fetch`` snapshot attached to the ops ticket.
-    * no_action -> nothing.
+    **Mode 2, Razorpay Subscriptions** (event carries a ``subscription_id`` only): Razorpay owns
+    the charge schedule and offers no merchant-initiated retry. The agent controls timing,
+    outreach and escalation: retry arms record the outstanding invoice, its pay link and
+    Razorpay's schedule (``invoice.all``) and are marked ``deferred``; reminders use
+    ``invoice.notify_by`` or are ``deferred`` with Razorpay's exact refusal and the pay link;
+    escalation snapshots the subscription (``subscription.fetch``). Nothing is reported as
+    executed unless a provider call succeeded.
 
-    Razorpay test mode cannot emit specific decline reasons; the failure taxonomy comes from the
-    simulator while these calls hit real test-mode endpoints. Pass a fake client in tests.
+    Webhook HMAC via ``Utility.verify_webhook_signature``. ``live_injector`` makes the next
+    ``createRecurring`` call fail at the transport layer so backoff and re-drive run against the
+    live endpoint. Test mode cannot emit specific decline reasons (docs/ARCHITECTURE.md).
     """
 
     name = "razorpay"
 
-    def __init__(self, ledger: AuditStore, client: Any, reminder_medium: str = "sms", **kw: Any) -> None:
+    def __init__(
+        self,
+        ledger: AuditStore,
+        client: Any,
+        reminder_medium: str = "sms",
+        live_injector: FailureInjector | None = None,
+        **kw: Any,
+    ) -> None:
         super().__init__(ledger, **kw)
         self.client = client
         self.reminder_medium = reminder_medium
+        self.live_injector = live_injector
+        if live_injector is not None:
+            self._install_transport_fault(live_injector)
+
+    def _install_transport_fault(self, injector: FailureInjector) -> None:
+        """Make the next armed ``POST /payments/create/recurring`` fail at the transport layer.
+
+        The failure happens inside the real SDK call path (a ``requests`` ConnectionError raised
+        before the request leaves the machine), so the executor's backoff, queueing and re-drive
+        run against the live endpoint and nothing is charged by the failed attempt.
+        """
+        session = getattr(self.client, "session", None)
+        if session is None:  # fake clients in tests
+            return
+        real_post = session.post
+
+        def post(url, *args, **kwargs):
+            if "/payments/create/recurring" in str(url) and injector.consume():
+                import requests
+
+                raise requests.exceptions.ConnectionError("injected transport fault: connection reset by peer")
+            return real_post(url, *args, **kwargs)
+
+        session.post = post
 
     @staticmethod
     def _wrap(fn, *args: Any, request: dict[str, Any] | None = None, **kwargs: Any) -> Any:
@@ -258,6 +290,57 @@ class RazorpayExecutor(BaseExecutor):
             if code and int(code) >= 500 or name in ("ServerError", "GatewayError", "ConnectionError", "Timeout"):
                 raise TransientError(int(code or 502), name) from e
             raise PermanentError(f"{name}: {e}", request=request) from e
+
+    def _charge_token(self, req: ExecutionRequest, notes: dict[str, Any], schedule: list[float]) -> ExecutorResult:
+        """Mode 1, tokenised recurring: order (receipt = idempotency key) + ``payment.createRecurring``.
+
+        Idempotency survives a lost response: before charging, any order already carrying this
+        receipt is looked up and, if it has an authorized/captured payment, that payment is
+        returned instead of a new charge.
+        """
+        p = req.payload
+        key = req.idempotency_key
+        existing = self._wrap(self.client.order.all, {"receipt": key, "count": 5},
+                              request={"call": "order.all", "receipt": key})
+        order = None
+        for o in existing.get("items", []):
+            pays = self._wrap(self.client.order.payments, o["id"], request={"call": "order.payments", "order_id": o["id"]})
+            done = [pm for pm in pays.get("items", []) if pm.get("status") in ("captured", "authorized")]
+            if done:
+                return ExecutorResult(
+                    status="executed", attempts=0, provider_ref=str(done[0]["id"]),
+                    detail={"mode": "tokenized_recurring", "call": "order.payments", "order_id": o["id"],
+                            "reused": True, "note": "a payment already existed for this idempotency key; no new charge",
+                            "schedule_days": schedule},
+                )
+            order = o
+            break
+        if order is None:
+            body = {"amount": int(round(req.amount * 100)), "currency": "INR", "receipt": key,
+                    "payment_capture": 1, "notes": notes}
+            order = self._wrap(self.client.order.create, body, request={"call": "order.create", **body})
+        charge = {
+            "email": p.get("email", "counterfact.test@example.com"),
+            "contact": p.get("contact", "+919999999999"),
+            "amount": int(round(req.amount * 100)),
+            "currency": "INR",
+            "order_id": order["id"],
+            "customer_id": p["customer_id"],
+            "token": p["token_id"],
+            "recurring": "1",
+            "description": f"Counterfact {req.action_name}",
+            "notes": notes,
+        }
+        summary = {"mode": "tokenized_recurring", "call": "payment.createRecurring",
+                   **{k: v for k, v in charge.items() if k not in ("email", "contact")}}
+        resp = self._wrap(self.client.payment.createRecurring, charge, request=summary)
+        pay_id = resp.get("razorpay_payment_id") or resp.get("id")
+        return ExecutorResult(
+            status="executed", attempts=0, provider_ref=str(pay_id),
+            detail={"mode": "tokenized_recurring", "request": summary, "response": resp, "order_id": order["id"],
+                    "schedule_days": schedule,
+                    "note": "first attempt executed now; later attempts in schedule_days are the sequencer's"},
+        )
 
     def _outstanding_invoice(self, subscription_id: str) -> dict[str, Any] | None:
         inv = self._wrap(self.client.invoice.all, {"subscription_id": subscription_id, "count": 10},
@@ -280,24 +363,8 @@ class RazorpayExecutor(BaseExecutor):
         schedule = list(plan.retry_days[: req.effective_retries])
         notes = {"idempotency_key": req.idempotency_key, "event_id": req.event_id, "action": req.action_name}
 
-        if p.get("token_id") and p.get("customer_id") and p.get("order_id"):
-            body = {
-                "email": p.get("email", "customer@example.com"),
-                "contact": p.get("contact", "9999999999"),
-                "amount": int(round(req.amount * 100)),
-                "currency": "INR",
-                "order_id": p["order_id"],
-                "customer_id": p["customer_id"],
-                "token": p["token_id"],
-                "recurring": "1",
-                "description": f"Counterfact retry {req.action_name}",
-                "notes": notes,
-            }
-            summary = {"call": "payment.createRecurring", **{k: v for k, v in body.items() if k not in ("email", "contact")}}
-            resp = self._wrap(self.client.payment.createRecurring, body, request=summary)
-            return ExecutorResult(status="executed", attempts=0,
-                                  provider_ref=str(resp.get("razorpay_payment_id") or resp.get("id")),
-                                  detail={"request": summary, "response": resp, "schedule_days": schedule})
+        if p.get("token_id") and p.get("customer_id"):
+            return self._charge_token(req, notes, schedule)
 
         invoice = self._outstanding_invoice(req.subscription_id)
         if invoice is None:
@@ -305,13 +372,13 @@ class RazorpayExecutor(BaseExecutor):
                               request={"call": "subscription.fetch", "subscription_id": req.subscription_id})
             return ExecutorResult(
                 status="skipped", attempts=0, provider_ref=req.subscription_id,
-                detail={"call": "invoice.all", "subscription_status": snap.get("status"),
+                detail={"mode": "razorpay_subscriptions", "call": "invoice.all", "subscription_status": snap.get("status"),
                         "reason": "no outstanding invoice to re-present (subscription not authenticated or fully paid)",
                         "idempotency_key": req.idempotency_key, "schedule_days": schedule},
             )
         pay_link = invoice.get("short_url")
         base_detail = {
-            "call": "invoice.all", "invoice_id": invoice["id"], "invoice_status": invoice.get("status"),
+            "mode": "razorpay_subscriptions", "call": "invoice.all", "invoice_id": invoice["id"], "invoice_status": invoice.get("status"),
             "amount_due_paise": invoice.get("amount_due"), "pay_link": pay_link,
             "subscription_id": req.subscription_id, "schedule_days": schedule,
             "idempotency_key": req.idempotency_key,
@@ -356,7 +423,8 @@ def dumps(obj: Any) -> str:
     return json.dumps(obj, default=str)
 
 
-def build_executor(settings, ledger: AuditStore, injector: FailureInjector | None = None, **kw: Any) -> BaseExecutor:
+def build_executor(settings, ledger: AuditStore, injector: FailureInjector | None = None,
+                   live_injector: FailureInjector | None = None, **kw: Any) -> BaseExecutor:
     """Executor selected by ``settings.executor``: ``mock`` (default) or ``razorpay`` (test keys only)."""
     if settings.executor == "razorpay":
         import razorpay  # type: ignore
@@ -366,5 +434,5 @@ def build_executor(settings, ledger: AuditStore, injector: FailureInjector | Non
         if not settings.razorpay_key_id.startswith("rzp_test_"):
             raise RuntimeError("refusing to build RazorpayExecutor: key is not a test key (rzp_test_ prefix)")
         client = razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
-        return RazorpayExecutor(ledger, client, injector=injector, **kw)
+        return RazorpayExecutor(ledger, client, injector=injector, live_injector=live_injector, **kw)
     return MockExecutor(ledger, failure_rate=settings.executor_failure_rate, seed=settings.seed, injector=injector, **kw)

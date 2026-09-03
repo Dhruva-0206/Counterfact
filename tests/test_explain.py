@@ -44,10 +44,24 @@ def test_validator(text: str, arm: str, ok: bool) -> None:
     assert validate(text, arm)[0] is ok
 
 
+@pytest.mark.parametrize(
+    "text, baseline, ok",
+    [
+        ("We retry after 7 days. Doing nothing has about a 29% chance of recovering on its own.", 0.29, True),
+        ("We retry after 7 days. Without action there is only a 29% chance of recovery, so the loss of Rs 999 is avoided.", 0.29, False),
+        ("We retry after 7 days because it is necessary. On its own the payment recovers 29% of the time.", 0.29, False),
+        ("We retry after 7 days. The customer will pay eventually.", 0.29, False),  # baseline not stated
+        ("We retry after 7 days. Doing nothing recovers about 3% of the time, so the loss of Rs 999 is nearly certain.", 0.03, True),
+    ],
+)
+def test_validator_baseline_and_certainty_rules(text: str, baseline: float, ok: bool) -> None:
+    assert validate(text, "retry_delayed", baseline)[0] is ok
+
+
 def test_template_is_deterministic_and_valid() -> None:
     t1, s1 = TemplateExplainer().explain(ROW)
     t2, _ = TemplateExplainer().explain(ROW)
-    assert t1 == t2 and s1 == "template" and validate(t1, "retry_delayed")[0]
+    assert t1 == t2 and s1 == "template" and validate(t1, "retry_delayed", 0.29)[0]
     row = {**ROW, "chosen_arm": 4, "action_name": "escalate_human", "rejection_codes": "MANDATORY_ESCALATION_AMOUNT"}
     text, _ = TemplateExplainer().explain(row)
     assert "escalate" in text and "MANDATORY_ESCALATION_AMOUNT" in text
@@ -88,7 +102,7 @@ def test_claude_explainer_accepts_valid_and_falls_back_on_invalid() -> None:
 
 
 def test_claude_explainer_respects_budget_cap() -> None:
-    good = "We will retry after 7 days. Doing nothing recovers less."
+    good = "We will retry after 7 days. Doing nothing recovers about 29% of the time."
     ex = ClaudeExplainer(client=_client([_Resp(good)] * 5), max_per_run=2)
     sources = [ex.explain(ROW)[1] for _ in range(4)]
     assert sources == ["claude", "claude", "template", "template"] and ex.calls == 2

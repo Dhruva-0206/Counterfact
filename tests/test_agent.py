@@ -95,13 +95,24 @@ def test_flag_file_injection(tmp_path: Path) -> None:
     assert inj.consume() is True and not flag.exists() and inj.consume() is False
 
 
-def test_razorpay_executor_uses_sdk_shapes_and_is_idempotent(tmp_path: Path) -> None:
-    calls: list[tuple] = []
-
+def _fake_client(calls: list, existing_payment: bool = False):
     class FakePayment:
         def createRecurring(self, data):  # noqa: N802 - SDK name
             calls.append(("createRecurring", data))
             return {"razorpay_payment_id": "pay_test123"}
+
+    class FakeOrder:
+        def all(self, data):
+            calls.append(("order.all", data))
+            return {"items": [{"id": "order_prev", "receipt": data["receipt"]}]} if existing_payment else {"items": []}
+
+        def payments(self, order_id):
+            calls.append(("order.payments", order_id))
+            return {"items": [{"id": "pay_prev", "status": "captured"}]} if existing_payment else {"items": []}
+
+        def create(self, data):
+            calls.append(("order.create", data))
+            return {"id": "order_new", "receipt": data["receipt"]}
 
     class FakeInvoice:
         def all(self, data):
@@ -119,28 +130,47 @@ def test_razorpay_executor_uses_sdk_shapes_and_is_idempotent(tmp_path: Path) -> 
             return {"status": "pending"}
 
     class FakeClient:
-        payment, invoice, subscription = FakePayment(), FakeInvoice(), FakeSub()
+        payment, order, invoice, subscription = FakePayment(), FakeOrder(), FakeInvoice(), FakeSub()
 
+    return FakeClient()
+
+
+def test_razorpay_executor_uses_sdk_shapes_and_is_idempotent(tmp_path: Path) -> None:
+    calls: list[tuple] = []
     store = AuditStore(tmp_path)
-    ex = RazorpayExecutor(store, FakeClient())
-    # tokenised event -> createRecurring
+    ex = RazorpayExecutor(store, _fake_client(calls))
+    # mode 1: tokenised event -> order (receipt = key) + createRecurring
     r = ex.execute(ExecutionRequest("k9", "evt_9", "sub_9", "retry_now", 1, 0, 1499.0, 3,
-                                    payload={"customer_id": "cust_1", "token_id": "tok_1", "order_id": "order_1"}))
-    assert r.status == "executed" and r.provider_ref == "pay_test123"
-    body = calls[-1][1]
-    assert body["amount"] == 149900 and body["currency"] == "INR" and body["recurring"] == "1"
+                                    payload={"customer_id": "cust_1", "token_id": "tok_1"}))
+    assert r.status == "executed" and r.provider_ref == "pay_test123" and r.detail["mode"] == "tokenized_recurring"
+    order_body = next(d for n, d in calls if n == "order.create")
+    assert order_body["receipt"] == "k9" and order_body["amount"] == 149900 and order_body["payment_capture"] == 1
+    body = next(d for n, d in calls if n == "createRecurring")
+    assert body["order_id"] == "order_new" and body["token"] == "tok_1" and body["recurring"] == "1"
     assert body["notes"]["idempotency_key"] == "k9" and r.detail["request"]["call"] == "payment.createRecurring"
-    # subscription event without a token: reminder -> notify_by on the outstanding invoice
+    # mode 2: subscription event without a token: reminder -> notify_by on the outstanding invoice
     r2 = ex.execute(ExecutionRequest("k10", "evt_10", "sub_9", "remind_and_retry", 3, 0, 1499.0, 3, payload={}))
     assert r2.status == "executed" and r2.provider_ref == "inv_due"
     assert ("notify_by", "inv_due", "sms") in calls and r2.detail["request"]["notes"]["idempotency_key"] == "k10"
     # plain retry arm without a token -> deferred to Razorpay's own schedule, pay link recorded
     r3 = ex.execute(ExecutionRequest("k11", "evt_11", "sub_9", "retry_delayed_3", 2, 3, 1499.0, 3, payload={}))
     assert r3.status == "deferred" and r3.provider_ref == "inv_due" and r3.detail["schedule_days"] == [3.0, 5.0, 7.0]
+    assert r3.detail["mode"] == "razorpay_subscriptions"
     # replay -> duplicate, no provider call
     n = len(calls)
     assert ex.execute(ExecutionRequest("k10", "evt_10", "sub_9", "remind_and_retry", 3, 0, 1499.0, 3)).status == "duplicate"
     assert len(calls) == n
+
+
+def test_razorpay_tokenised_reuses_existing_payment_for_same_receipt(tmp_path: Path) -> None:
+    """A lost response followed by a re-drive must not charge twice: the order carrying the receipt
+    already has a captured payment, so it is returned and createRecurring is not called."""
+    calls: list[tuple] = []
+    ex = RazorpayExecutor(AuditStore(tmp_path), _fake_client(calls, existing_payment=True))
+    r = ex.execute(ExecutionRequest("k1", "e", "sub", "retry_now", 1, 0, 299.0, 3,
+                                    payload={"customer_id": "cust_1", "token_id": "tok_1"}))
+    assert r.status == "executed" and r.provider_ref == "pay_prev" and r.detail["reused"] is True
+    assert not any(n == "createRecurring" for n, *_ in calls)
 
 
 def test_razorpay_executor_skips_when_no_outstanding_invoice(tmp_path: Path) -> None:

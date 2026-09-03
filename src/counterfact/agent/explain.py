@@ -51,6 +51,13 @@ CONTRAST_MARKERS = (
     "would have", "would only", "unlikely", "lower", "rules out", "ruled out", "over ", "beats",
     "versus", " vs", "compared", "outperform",
 )
+CERTAINTY_PATTERNS: tuple[str, ...] = (
+    r"\bloss of rs", r"\bresult(s|ing)? in (a |an )?(loss|lost)", r"\bwill be lost\b", r"\bwould be lost\b",
+    r"\bnecessary\b", r"\bguarantee", r"\bcertain(ly)?\b", r"\binevitabl", r"\bno chance\b",
+    r"\bdefinitely\b", r"\bwill (not|never) recover\b", r"\bpermanent(ly)? (loss|lost)\b(?![^.]*\d+%)",
+)
+BASELINE_CONTEXT = r"(no action|doing nothing|do nothing|inaction|without (any )?(action|intervention|a retry|this)|on its own|spontaneous|baseline|by itself|left alone)"
+
 FORBIDDEN_ACTIONS: tuple[str, ...] = (
     "discount", "coupon", "refund", "waive", "waiver", "credit note", "chargeback",
     "cancel the subscription", "cancel their subscription", "terminate", "block the customer",
@@ -58,13 +65,28 @@ FORBIDDEN_ACTIONS: tuple[str, ...] = (
 )
 
 
-def validate(text: str, chosen_arm: str) -> tuple[bool, str]:
-    """Accept only text that names the chosen action, recommends no other arm, and proposes no
-    action outside the action set. Other arms may be mentioned contrastively ("rather than ...").
+def validate(text: str, chosen_arm: str, baseline: float | None = None) -> tuple[bool, str]:
+    """Accept only text that names the chosen action, recommends no other arm, proposes no action
+    outside the action set, states the no-action baseline as a probability when one is given, and
+    uses no certainty language when that baseline is above 5%. Other arms may be mentioned
+    contrastively ("rather than ...").
     """
     t = text.lower()
     if not t.strip():
         return False, "empty"
+    if baseline is not None:
+        pct = f"{baseline:.0%}"
+        stated = any(
+            pct in sent and re.search(BASELINE_CONTEXT, sent)
+            for sent in re.split(r"(?<=[.!?])\s+", t)
+        )
+        if not stated:
+            return False, f"does not state the no-action baseline ({pct}) as a probability"
+        if baseline > 0.05:
+            for pat in CERTAINTY_PATTERNS:
+                m = re.search(pat, t)
+                if m:
+                    return False, f"certainty language with a {pct} baseline: '{m.group(0)}'"
     sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+", text.strip()) if x.strip()]
     if len(sentences) > 3:
         return False, "too long (more than three sentences)"
@@ -94,6 +116,11 @@ def _arm_name(row: dict[str, Any]) -> str:
 
 def _fmt_rs(x: float) -> str:
     return f"Rs {x:,.0f}"
+
+
+def _baseline(row: dict[str, Any]) -> float | None:
+    v = row.get("p_no_action_hat")
+    return None if v is None else float(v)
 
 
 def _label(row: dict[str, Any]) -> str:
@@ -147,7 +174,10 @@ SYSTEM_PROMPT = (
     "You write two-sentence, plain-English explanations of an automated payment-recovery decision "
     "for a merchant's finance team. You are given the decision and the numbers behind it. "
     "Sentence one states the action taken, using the exact action phrase provided, and the main "
-    "reason. Sentence two states what it costs or risks, or why doing nothing was worse. "
+    "reason. Sentence two must state the estimated chance that the payment recovers with no action "
+    "as the exact percentage provided (for example 'about 12% chance of recovering on its own'), "
+    "and may add what the action costs or risks. Never describe the outcome of doing nothing as "
+    "certain: no 'loss of Rs X', 'necessary', 'will be lost' or similar; speak in probabilities. "
     "The numbers labelled 'incremental recovery probability' are lifts over doing nothing, not "
     "success rates; never call them success probabilities and never invent other numbers. "
     "Do not recommend a different action, and do not mention discounts, refunds, cancellations, "
@@ -223,7 +253,7 @@ class ClaudeExplainer:
             text, _ = self.template.explain(row)
             return text, "template (llm refusal)"
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-        ok, reason = validate(text, _arm_name(row))
+        ok, reason = validate(text, _arm_name(row), _baseline(row))
         if not ok:
             self.rejected += 1
             fallback, _ = self.template.explain(row)
@@ -241,6 +271,19 @@ def explain_pending(store: AuditStore, explainer: Explainer, limit: int = MAX_EX
         store.set_explanation(row["event_id"], text, source)
         n += 1
     return n
+
+
+def revalidate(store: AuditStore) -> list[tuple[str, str]]:
+    """Return (event_id, reason) for cached explanations that fail the current validator."""
+    bad = []
+    for row in store.all_decisions():
+        text = row.get("explanation")
+        if not text:
+            continue
+        ok, reason = validate(text, ARMS[int(row["chosen_arm"])], _baseline(row))
+        if not ok:
+            bad.append((row["event_id"], reason))
+    return bad
 
 
 def reexplain(store: AuditStore, explainer: Explainer, event_ids: list[str]) -> int:

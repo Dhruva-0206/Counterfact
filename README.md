@@ -158,13 +158,16 @@ test keys (`COUNTERFACT_EXECUTOR=razorpay`) and an Anthropic key (live explanati
 - **Synthetic data.** Results are on a simulator calibrated to the public 55-65% recovery band
   with hidden structure the models cannot see (`docs/EVALUATION.md`). We claim methodology and
   relative lift, not absolute rupees for any merchant.
-- **Razorpay test mode cannot emit failure reasons, and Subscriptions has no merchant retry.**
-  The taxonomy comes from the simulator. Live (test keys): `subscription.fetch`, `invoice.all`
-  and signed webhooks work end to end; `invoice.notify_by` is refused on subscription-generated
-  invoices without a customer contact, and `payment.createRecurring` needs a saved token, so on
-  the Subscriptions product retry timing is Razorpay's own and our retry arms are recorded as
-  `deferred` with the outstanding invoice's pay link (ADR-015). Tokenised Recurring Payments
-  events take the `createRecurring` path.
+- **Razorpay test mode cannot emit failure reasons.** The taxonomy comes from the simulator.
+  The live executor has two explicit modes (ADR-015): *tokenised recurring*, where the agent
+  executes charges itself with order-receipt idempotency (`order.create` + `createRecurring`),
+  and *Razorpay Subscriptions*, where Razorpay owns the charge schedule and the agent controls
+  timing, outreach and escalation and records Razorpay's schedule. Verified live: signed
+  webhooks, `subscription.fetch`, `invoice.all`, `order.create`, backoff and re-drive on the real
+  call path, and zero duplicate charges via Razorpay's own records. The charge call itself
+  (`/payments/create/recurring`) returns 404 on our test account because Recurring Payments is
+  not enabled for it; that is an account setting, and deferred or failed rows are never shown as
+  executed.
 - **The rule table is oracle-informed.** It was written with the simulator's true per-category
   probabilities. The ML policy ties it under `calibrated` and beats it under `drifted`.
 - **A/B intervals are wide** (heavy-tailed B2B invoices); the paired-exact numbers are the
