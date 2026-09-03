@@ -1,0 +1,21 @@
+# env / secrets
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# generated data and reports (final figures are kept)
+data/
+reports/*
+!reports/figures/
+!reports/figures/**
+!reports/.gitkeep
+
+# editor
+.vscode/
+.idea/
