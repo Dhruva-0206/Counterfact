@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 import numpy as np
 
 from counterfact.agent.audit import AuditStore
-from counterfact.agent.executor import FailureInjector, MockExecutor
+from counterfact.agent.executor import FailureInjector, MockExecutor, build_executor
 from counterfact.agent.explain import (
     MAX_EXPLANATIONS_PER_RUN,
     ClaudeExplainer,
@@ -46,6 +46,10 @@ def main() -> None:
     ap.add_argument("--failure-rate", type=float, default=None, help="random transient 5xx rate")
     ap.add_argument("--explain", type=int, default=0, help="generate up to N LLM explanations (cached)")
     ap.add_argument("--audit-dir", default=None)
+    ap.add_argument("--subscription-id", default=None, help="live executor: route every event to this subscription")
+    ap.add_argument("--customer-id", default=None)
+    ap.add_argument("--token-id", default=None)
+    ap.add_argument("--invoice-id", default=None)
     args = ap.parse_args()
 
     settings = get_settings()
@@ -54,17 +58,26 @@ def main() -> None:
     audit_dir = ROOT / (args.audit_dir or f"reports/audit/batch_{variant}_{run_id}")
     store = AuditStore(audit_dir)
     injector = FailureInjector(flag_path=INJECT_FLAG)
-    executor = MockExecutor(
-        store,
-        failure_rate=args.failure_rate if args.failure_rate is not None else settings.executor_failure_rate,
-        seed=settings.seed, injector=injector, backoff_base=0.02,
-    )
+    if settings.executor == "razorpay":
+        executor = build_executor(settings, store, injector=injector, backoff_base=0.5)
+    else:
+        executor = MockExecutor(
+            store,
+            failure_rate=args.failure_rate if args.failure_rate is not None else settings.executor_failure_rate,
+            seed=settings.seed, injector=injector, backoff_base=0.02,
+        )
     model = TLearner.load(settings.variant_dir(variant) / "models" / "uplift.pkl")
     merchants = load_merchants(settings, variant)
     agent = Agent(model, merchants, executor, store)
 
     df, cf = holdout_frame(settings, variant)
     df, cf = df.head(args.n).reset_index(drop=True), cf.head(args.n).reset_index(drop=True)
+    if args.subscription_id:  # live executor: every event acts on the real test subscription
+        df = df.copy()
+        df["subscription_id"] = args.subscription_id
+        for col, val in (("customer_id", args.customer_id), ("token_id", args.token_id), ("invoice_id", args.invoice_id)):
+            if val:
+                df[col] = val
     inject_at = args.inject_at if args.inject_at is not None else args.n // 2
 
     t0 = time.time()
@@ -94,8 +107,8 @@ def main() -> None:
             agent.record_outcome(eid, bool(y[i]), float(amount[i]) if y[i] else 0.0, redriven=True)
 
     m = store.metrics()
-    dup_charges = sum(1 for v in executor.charges.values() if v > 1)
-    print(f"batch of {len(handled)} failures ({variant}) processed in {elapsed:.1f}s -> {audit_dir}")
+    dup_charges = sum(1 for v in getattr(executor, "charges", {}).values() if v > 1)
+    print(f"batch of {len(handled)} failures ({variant}, executor={executor.name}) processed in {elapsed:.1f}s -> {audit_dir}")
     print(f"  recovered: {m['recovered']}/{m['outcomes_known']} = {m['recovery_rate']:.1%}   "
           f"Rs recovered {m['rs_recovered']:,.0f} of Rs {m['rs_at_risk']:,.0f} at risk")
     print(f"  contacts {m['contacts']}  escalations {m['escalations']}  abstentions {m['abstentions']}  "

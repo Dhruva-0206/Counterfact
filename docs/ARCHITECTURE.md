@@ -40,12 +40,18 @@ payment.failed ──► Agent.handle_batch ──► MLPolicy.decide (vectorise
               world / webhook ──► record_outcome ┘   redrive_queued() re-claims queued keys
 ```
 * **Executors.** `MockExecutor` (default; counts charges per event so tests can assert zero
-  duplicates; random or injected 5xx). `RazorpayExecutor` (test mode): retry arms ->
-  `payment.createRecurring` (charge the saved mandate/token again), reminder ->
-  `invoice.notify_by(invoice_id, "sms")`, escalation -> `subscription.fetch` snapshot for the ops
-  ticket; webhook HMAC via `Utility.verify_webhook_signature`. Both executors share the same
-  ledger and backoff logic; the Razorpay one is exercised against a fake client in tests and
-  runs live with `COUNTERFACT_EXECUTOR=razorpay` plus test keys in `.env`.
+  duplicates; random or injected 5xx). `RazorpayExecutor` (test mode, verified live on
+  2026-09-03 against `sub_TXXDsVmg4d3fkR`, ADR-015): escalation -> `subscription.fetch` snapshot for
+  the ops ticket; retry arms -> `payment.createRecurring` when the event carries a saved token,
+  customer and order (Recurring Payments product), otherwise `invoice.all(subscription_id)` to
+  find the outstanding invoice and record its pay link, marked `deferred` because Razorpay's
+  Subscriptions product has no merchant-initiated retry (Razorpay retries `pending` subscriptions
+  itself; `halted` ones are paid by the customer via the link); reminder -> `invoice.notify_by`,
+  or `deferred` with the exact Razorpay error and the pay link when Razorpay refuses (it does on
+  subscription-generated invoices without a customer contact). Webhook HMAC via
+  `Utility.verify_webhook_signature`. Both executors share the ledger and backoff logic; the
+  Razorpay one runs with `COUNTERFACT_EXECUTOR=razorpay` and test keys in `.env` and refuses
+  non-test keys.
 * **Idempotency by construction.** The key is reserved in SQLite (`INSERT OR IGNORE`) before any
   provider call; a replayed webhook returns `duplicate` without a call; a queued key can only be
   re-driven through `claim_queued`, so an event can never be charged twice.

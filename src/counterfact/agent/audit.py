@@ -78,13 +78,27 @@ class AuditStore:
                 f.write(json.dumps(row, default=str) + "\n")
             with self._con:
                 self._con.execute(
-                    """INSERT OR REPLACE INTO decisions
+                    """INSERT INTO decisions
                        (event_id, ts, idempotency_key, features_hash, merchant_id, amount, failure_category,
                         attempt_number, chosen_arm, action_name, delay_days, proposed_arm, overridden,
                         uplift, net_ev, guardrail_checks, rejection_codes, reason, executor_status,
                         executor_result, outcome, explanation, explanation_source,
                         p_no_action_hat, threshold)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(event_id) DO UPDATE SET
+                         ts = excluded.ts, idempotency_key = excluded.idempotency_key,
+                         features_hash = excluded.features_hash, chosen_arm = excluded.chosen_arm,
+                         action_name = excluded.action_name, delay_days = excluded.delay_days,
+                         proposed_arm = excluded.proposed_arm, overridden = excluded.overridden,
+                         uplift = excluded.uplift, net_ev = excluded.net_ev,
+                         guardrail_checks = excluded.guardrail_checks,
+                         rejection_codes = excluded.rejection_codes, reason = excluded.reason,
+                         executor_status = excluded.executor_status,
+                         executor_result = excluded.executor_result,
+                         outcome = COALESCE(excluded.outcome, decisions.outcome),
+                         explanation = COALESCE(excluded.explanation, decisions.explanation),
+                         explanation_source = COALESCE(excluded.explanation_source, decisions.explanation_source),
+                         p_no_action_hat = excluded.p_no_action_hat, threshold = excluded.threshold""",
                     (
                         row["event_id"], row["ts"], row["idempotency_key"], row["features_hash"],
                         row.get("merchant_id"), row.get("amount"), row.get("failure_category"),

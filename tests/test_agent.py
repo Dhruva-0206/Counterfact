@@ -104,29 +104,82 @@ def test_razorpay_executor_uses_sdk_shapes_and_is_idempotent(tmp_path: Path) -> 
             return {"razorpay_payment_id": "pay_test123"}
 
     class FakeInvoice:
+        def all(self, data):
+            calls.append(("invoice.all", data))
+            return {"items": [{"id": "inv_old", "status": "paid", "created_at": 1},
+                              {"id": "inv_due", "status": "issued", "created_at": 2, "amount_due": 149900}]}
+
         def notify_by(self, invoice_id, medium):
             calls.append(("notify_by", invoice_id, medium))
-            return {}
+            return {"success": True}
 
     class FakeSub:
         def fetch(self, sid):
             calls.append(("fetch", sid))
-            return {"status": "halted"}
+            return {"status": "pending"}
 
     class FakeClient:
         payment, invoice, subscription = FakePayment(), FakeInvoice(), FakeSub()
 
     store = AuditStore(tmp_path)
     ex = RazorpayExecutor(store, FakeClient())
-    r = ex.execute(ExecutionRequest("k9", "evt_9", "sub_9", "remind_and_retry", 3, 0, 1499.0, 3,
-                                    payload={"invoice_id": "inv_1", "customer_id": "cust_1", "token_id": "tok_1"}))
+    # tokenised event -> createRecurring
+    r = ex.execute(ExecutionRequest("k9", "evt_9", "sub_9", "retry_now", 1, 0, 1499.0, 3,
+                                    payload={"customer_id": "cust_1", "token_id": "tok_1", "order_id": "order_1"}))
     assert r.status == "executed" and r.provider_ref == "pay_test123"
-    assert calls[0] == ("notify_by", "inv_1", "sms")
-    body = calls[1][1]
+    body = calls[-1][1]
     assert body["amount"] == 149900 and body["currency"] == "INR" and body["recurring"] == "1"
-    assert body["notes"]["idempotency_key"] == "k9"
-    assert ex.execute(ExecutionRequest("k9", "evt_9", "sub_9", "remind_and_retry", 3, 0, 1499.0, 3)).status == "duplicate"
-    assert len(calls) == 2  # no second provider call
+    assert body["notes"]["idempotency_key"] == "k9" and r.detail["request"]["call"] == "payment.createRecurring"
+    # subscription event without a token: reminder -> notify_by on the outstanding invoice
+    r2 = ex.execute(ExecutionRequest("k10", "evt_10", "sub_9", "remind_and_retry", 3, 0, 1499.0, 3, payload={}))
+    assert r2.status == "executed" and r2.provider_ref == "inv_due"
+    assert ("notify_by", "inv_due", "sms") in calls and r2.detail["request"]["notes"]["idempotency_key"] == "k10"
+    # plain retry arm without a token -> deferred to Razorpay's own schedule, pay link recorded
+    r3 = ex.execute(ExecutionRequest("k11", "evt_11", "sub_9", "retry_delayed_3", 2, 3, 1499.0, 3, payload={}))
+    assert r3.status == "deferred" and r3.provider_ref == "inv_due" and r3.detail["schedule_days"] == [3.0, 5.0, 7.0]
+    # replay -> duplicate, no provider call
+    n = len(calls)
+    assert ex.execute(ExecutionRequest("k10", "evt_10", "sub_9", "remind_and_retry", 3, 0, 1499.0, 3)).status == "duplicate"
+    assert len(calls) == n
+
+
+def test_razorpay_executor_skips_when_no_outstanding_invoice(tmp_path: Path) -> None:
+    class FakeInvoice:
+        def all(self, data):
+            return {"items": []}
+
+    class FakeSub:
+        def fetch(self, sid):
+            return {"status": "created"}
+
+    class FakeClient:
+        invoice, subscription = FakeInvoice(), FakeSub()
+
+    ex = RazorpayExecutor(AuditStore(tmp_path), FakeClient())
+    r = ex.execute(ExecutionRequest("k1", "e", "sub_x", "retry_delayed_3", 2, 3, 299.0, 3))
+    assert r.status == "skipped" and "not authenticated" in r.detail["reason"]
+    assert r.detail["subscription_status"] == "created" and r.detail["idempotency_key"] == "k1"
+
+
+def test_razorpay_reminder_deferred_when_notify_not_allowed(tmp_path: Path) -> None:
+    class BadRequestError(Exception):
+        status_code = 400
+
+    class FakeInvoice:
+        def all(self, data):
+            return {"items": [{"id": "inv_auth", "status": "issued", "created_at": 1, "amount_due": 29900,
+                               "short_url": "https://rzp.io/rzp/x"}]}
+
+        def notify_by(self, invoice_id, medium):
+            raise BadRequestError("Operation not allowed for Invoice in issued status.")
+
+    class FakeClient:
+        invoice = FakeInvoice()
+
+    ex = RazorpayExecutor(AuditStore(tmp_path), FakeClient())
+    r = ex.execute(ExecutionRequest("k2", "e", "sub_x", "remind_and_retry", 3, 0, 299.0, 3))
+    assert r.status == "deferred" and "not allowed" in (r.error or "")
+    assert r.detail["pay_link"] == "https://rzp.io/rzp/x" and r.detail["request"]["call"] == "invoice.notify_by"
 
 
 def test_razorpay_error_classification(tmp_path: Path) -> None:

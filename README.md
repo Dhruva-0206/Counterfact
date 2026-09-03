@@ -158,10 +158,13 @@ test keys (`COUNTERFACT_EXECUTOR=razorpay`) and an Anthropic key (live explanati
 - **Synthetic data.** Results are on a simulator calibrated to the public 55-65% recovery band
   with hidden structure the models cannot see (`docs/EVALUATION.md`). We claim methodology and
   relative lift, not absolute rupees for any merchant.
-- **Razorpay test mode cannot emit failure reasons.** The taxonomy comes from the simulator;
-  retries (`payment.createRecurring`), reminders (`invoice.notify_by`), subscription reads and
-  webhook verification hit real test-mode endpoints. The Razorpay executor is exercised against a
-  fake client in tests; a live run needs test keys.
+- **Razorpay test mode cannot emit failure reasons, and Subscriptions has no merchant retry.**
+  The taxonomy comes from the simulator. Live (test keys): `subscription.fetch`, `invoice.all`
+  and signed webhooks work end to end; `invoice.notify_by` is refused on subscription-generated
+  invoices without a customer contact, and `payment.createRecurring` needs a saved token, so on
+  the Subscriptions product retry timing is Razorpay's own and our retry arms are recorded as
+  `deferred` with the outstanding invoice's pay link (ADR-015). Tokenised Recurring Payments
+  events take the `createRecurring` path.
 - **The rule table is oracle-informed.** It was written with the simulator's true per-category
   probabilities. The ML policy ties it under `calibrated` and beats it under `drifted`.
 - **A/B intervals are wide** (heavy-tailed B2B invoices); the paired-exact numbers are the

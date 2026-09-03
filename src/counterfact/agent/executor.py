@@ -42,6 +42,10 @@ class TransientError(Exception):
 class PermanentError(Exception):
     """Provider rejected the request for good (4xx other than 429/408)."""
 
+    def __init__(self, message: str, request: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.request = request or {}
+
 
 @dataclass
 class ExecutionRequest:
@@ -59,7 +63,7 @@ class ExecutionRequest:
 
 @dataclass
 class ExecutorResult:
-    status: str  # executed | queued | failed | skipped | duplicate
+    status: str  # executed | queued | failed | skipped | duplicate | deferred
     attempts: int
     provider_ref: str | None = None
     error: str | None = None
@@ -162,7 +166,8 @@ class BaseExecutor:
                     return result
                 self._sleep(self.backoff_base * (2 ** (attempts - 1)))
             except PermanentError as e:
-                result = ExecutorResult(status="failed", attempts=attempts, error=str(e))
+                result = ExecutorResult(status="failed", attempts=attempts, error=str(e),
+                                        detail={"request": getattr(e, "request", {})})
                 self.ledger.finish(req.idempotency_key, "failed", attempts, result.to_dict())
                 return result
 
@@ -210,11 +215,20 @@ class MockExecutor(BaseExecutor):
 class RazorpayExecutor(BaseExecutor):
     """Razorpay test-mode executor. Maps arms to real SDK calls; idempotency is ours, not Razorpay's.
 
-    * retry_now / retry_delayed / remind_and_retry -> ``client.payment.createRecurring`` (charge
-      the saved mandate/token again for the subscription's failed invoice); the schedule beyond
-      the first attempt is recorded for the scheduler (out of scope for the demo).
-    * remind_and_retry additionally -> ``client.invoice.notify_by(invoice_id, "sms")``.
-    * escalate_human -> ``client.subscription.fetch`` snapshot attached to the ops ticket.
+    Razorpay's Subscriptions product has no merchant-initiated charge or retry endpoint: Razorpay
+    itself retries a ``pending`` subscription on its own schedule, and a ``halted`` one needs the
+    customer to pay the outstanding invoice. So (ADR-015):
+
+    * retry arms -> if the event carries a saved ``token_id`` + ``customer_id`` + ``order_id``
+      (Recurring Payments product), ``payment.createRecurring`` charges the token again;
+      otherwise the retry is Razorpay's own (there is no merchant-initiated retry on the
+      Subscriptions product): the outstanding invoice and its pay link are recorded via
+      ``invoice.all(subscription_id)`` and the action is marked ``deferred``. No outstanding
+      invoice (subscription not yet authenticated) -> ``skipped`` with the reason.
+    * remind_and_retry -> ``invoice.notify_by`` on the outstanding invoice; Razorpay rejects this on
+      subscription-generated invoices without a customer contact, in which case the exact error and
+      the pay link are recorded and the action is ``deferred`` to the merchant's own channel.
+    * escalate_human -> ``subscription.fetch`` snapshot attached to the ops ticket.
     * no_action -> nothing.
 
     Razorpay test mode cannot emit specific decline reasons; the failure taxonomy comes from the
@@ -223,12 +237,13 @@ class RazorpayExecutor(BaseExecutor):
 
     name = "razorpay"
 
-    def __init__(self, ledger: AuditStore, client: Any, **kw: Any) -> None:
+    def __init__(self, ledger: AuditStore, client: Any, reminder_medium: str = "sms", **kw: Any) -> None:
         super().__init__(ledger, **kw)
         self.client = client
+        self.reminder_medium = reminder_medium
 
     @staticmethod
-    def _wrap(fn, *args: Any, **kwargs: Any) -> Any:
+    def _wrap(fn, *args: Any, request: dict[str, Any] | None = None, **kwargs: Any) -> Any:
         try:
             import razorpay.errors as rz_err  # type: ignore
         except ImportError:  # pragma: no cover
@@ -242,42 +257,88 @@ class RazorpayExecutor(BaseExecutor):
                 raise TransientError(int(code or 502), name) from e
             if code and int(code) >= 500 or name in ("ServerError", "GatewayError", "ConnectionError", "Timeout"):
                 raise TransientError(int(code or 502), name) from e
-            raise PermanentError(f"{name}: {e}") from e
+            raise PermanentError(f"{name}: {e}", request=request) from e
+
+    def _outstanding_invoice(self, subscription_id: str) -> dict[str, Any] | None:
+        inv = self._wrap(self.client.invoice.all, {"subscription_id": subscription_id, "count": 10},
+                         request={"call": "invoice.all", "subscription_id": subscription_id})
+        items = [i for i in inv.get("items", []) if i.get("status") in ("issued", "partially_paid", "expired")]
+        items.sort(key=lambda i: int(i.get("created_at") or 0), reverse=True)
+        return items[0] if items else None
 
     def _call(self, req: ExecutionRequest) -> ExecutorResult:
         p = req.payload
         if req.arm == NO_ACTION:
             return ExecutorResult(status="skipped", attempts=0)
         if req.arm == ESCALATE_HUMAN:
-            snap = self._wrap(self.client.subscription.fetch, req.subscription_id)
+            snap = self._wrap(self.client.subscription.fetch, req.subscription_id,
+                              request={"call": "subscription.fetch", "subscription_id": req.subscription_id})
             return ExecutorResult(status="executed", attempts=0, provider_ref=req.subscription_id,
-                                  detail={"queue": "merchant_ops", "subscription_status": snap.get("status")})
-        detail: dict[str, Any] = {}
-        if req.arm == REMIND_AND_RETRY and p.get("invoice_id"):
-            self._wrap(self.client.invoice.notify_by, p["invoice_id"], "sms")
-            detail["reminder"] = {"invoice_id": p["invoice_id"], "medium": "sms", "send_at": req.message_send_at}
-        body = {
-            "email": p.get("email", "customer@example.com"),
-            "contact": p.get("contact", "9999999999"),
-            "amount": int(round(req.amount * 100)),
-            "currency": "INR",
-            "order_id": p.get("order_id"),
-            "customer_id": p.get("customer_id"),
-            "token": p.get("token_id"),
-            "recurring": "1",
-            "description": f"Counterfact retry {req.action_name}",
-            "notes": {"idempotency_key": req.idempotency_key, "event_id": req.event_id, "action": req.action_name},
-        }
-        body = {k: v for k, v in body.items() if v is not None}
-        resp = self._wrap(self.client.payment.createRecurring, body)
+                                  detail={"call": "subscription.fetch", "queue": "merchant_ops",
+                                          "subscription_status": snap.get("status")})
         plan = plan_for(req.arm, req.delay_days)
-        detail.update({
-            "razorpay_payment_id": resp.get("razorpay_payment_id") or resp.get("id"),
-            "schedule_days": list(plan.retry_days[: req.effective_retries]),
-            "request": {k: v for k, v in body.items() if k not in ("email", "contact")},
-        })
-        return ExecutorResult(status="executed", attempts=0,
-                              provider_ref=str(detail["razorpay_payment_id"]), detail=detail)
+        schedule = list(plan.retry_days[: req.effective_retries])
+        notes = {"idempotency_key": req.idempotency_key, "event_id": req.event_id, "action": req.action_name}
+
+        if p.get("token_id") and p.get("customer_id") and p.get("order_id"):
+            body = {
+                "email": p.get("email", "customer@example.com"),
+                "contact": p.get("contact", "9999999999"),
+                "amount": int(round(req.amount * 100)),
+                "currency": "INR",
+                "order_id": p["order_id"],
+                "customer_id": p["customer_id"],
+                "token": p["token_id"],
+                "recurring": "1",
+                "description": f"Counterfact retry {req.action_name}",
+                "notes": notes,
+            }
+            summary = {"call": "payment.createRecurring", **{k: v for k, v in body.items() if k not in ("email", "contact")}}
+            resp = self._wrap(self.client.payment.createRecurring, body, request=summary)
+            return ExecutorResult(status="executed", attempts=0,
+                                  provider_ref=str(resp.get("razorpay_payment_id") or resp.get("id")),
+                                  detail={"request": summary, "response": resp, "schedule_days": schedule})
+
+        invoice = self._outstanding_invoice(req.subscription_id)
+        if invoice is None:
+            snap = self._wrap(self.client.subscription.fetch, req.subscription_id,
+                              request={"call": "subscription.fetch", "subscription_id": req.subscription_id})
+            return ExecutorResult(
+                status="skipped", attempts=0, provider_ref=req.subscription_id,
+                detail={"call": "invoice.all", "subscription_status": snap.get("status"),
+                        "reason": "no outstanding invoice to re-present (subscription not authenticated or fully paid)",
+                        "idempotency_key": req.idempotency_key, "schedule_days": schedule},
+            )
+        pay_link = invoice.get("short_url")
+        base_detail = {
+            "call": "invoice.all", "invoice_id": invoice["id"], "invoice_status": invoice.get("status"),
+            "amount_due_paise": invoice.get("amount_due"), "pay_link": pay_link,
+            "subscription_id": req.subscription_id, "schedule_days": schedule,
+            "idempotency_key": req.idempotency_key,
+            "note": ("Razorpay Subscriptions has no merchant-initiated retry: Razorpay retries a pending "
+                     "subscription on its own schedule; a halted one is paid by the customer via the pay link"),
+        }
+        if req.arm != REMIND_AND_RETRY:
+            # retry arms on the Subscriptions product: the retry itself is Razorpay's; we record the
+            # outstanding invoice and its pay link so the schedule is auditable, and mark it deferred.
+            return ExecutorResult(status="deferred", attempts=0, provider_ref=str(invoice["id"]), detail=base_detail)
+        summary = {"call": "invoice.notify_by", "invoice_id": invoice["id"], "medium": self.reminder_medium,
+                   "subscription_id": req.subscription_id, "notes": notes}
+        try:
+            resp = self._wrap(self.client.invoice.notify_by, invoice["id"], self.reminder_medium, request=summary)
+        except PermanentError as e:
+            # Razorpay refuses notifications on subscription-generated invoices without a customer
+            # contact ("Operation not allowed for Invoice in issued status"). Record the exact error and
+            # the pay link so the merchant sends the reminder through its own channel; never a silent no-op.
+            return ExecutorResult(status="deferred", attempts=0, provider_ref=str(invoice["id"]),
+                                  error=str(e), detail={**base_detail, "request": summary,
+                                                        "message_send_at": req.message_send_at,
+                                                        "reminder": "send pay_link via merchant channel"})
+        return ExecutorResult(
+            status="executed", attempts=0, provider_ref=str(invoice["id"]),
+            detail={"request": summary, "response": resp, "schedule_days": schedule, "pay_link": pay_link,
+                    "message_send_at": req.message_send_at},
+        )
 
 
 def verify_webhook(body: bytes, signature: str, secret: str) -> bool:
@@ -293,3 +354,17 @@ def verify_webhook(body: bytes, signature: str, secret: str) -> bool:
 
 def dumps(obj: Any) -> str:
     return json.dumps(obj, default=str)
+
+
+def build_executor(settings, ledger: AuditStore, injector: FailureInjector | None = None, **kw: Any) -> BaseExecutor:
+    """Executor selected by ``settings.executor``: ``mock`` (default) or ``razorpay`` (test keys only)."""
+    if settings.executor == "razorpay":
+        import razorpay  # type: ignore
+
+        if not settings.razorpay_key_id or not settings.razorpay_key_secret:
+            raise RuntimeError("COUNTERFACT_EXECUTOR=razorpay needs RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env")
+        if not settings.razorpay_key_id.startswith("rzp_test_"):
+            raise RuntimeError("refusing to build RazorpayExecutor: key is not a test key (rzp_test_ prefix)")
+        client = razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+        return RazorpayExecutor(ledger, client, injector=injector, **kw)
+    return MockExecutor(ledger, failure_rate=settings.executor_failure_rate, seed=settings.seed, injector=injector, **kw)

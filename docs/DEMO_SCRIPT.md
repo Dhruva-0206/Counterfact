@@ -19,3 +19,17 @@ Setup before the demo (once): `make setup && make data && make train && make eva
 
 Fallbacks: if the dashboard is slow, every table is a CSV under `reports/tables/` and every
 figure a PNG under `reports/figures/`; the batch output alone covers bars 1, 2 and 3.
+
+## Live Razorpay test-mode objects (created by `python scripts/razorpay_setup.py`)
+| object | id | note |
+|---|---|---|
+| plan | `plan_TXXDsJxh3gYvKA` | "Counterfact test plan", Rs 299 monthly |
+| subscription | `sub_TXXDsVmg4d3fkR` | 12 cycles; authenticate on `https://rzp.io/rzp/3z6ROQY` |
+| authentication invoice | `inv_TXXDt2WOaMOAXF` | Rs 299 due; pay link `https://rzp.io/rzp/o6nawaF` |
+
+Failure card for a real `payment.failed` in test mode (Razorpay test-card docs): `4100 2800 0008 0001`
+("insufficient account balance"); any future expiry, any CVV; an OTP shorter than 4 digits also fails
+the payment. Success card for subscriptions: `4718 6091 0820 4366`.
+
+Live executor: `COUNTERFACT_EXECUTOR=razorpay python scripts/run_batch.py --n 20 --subscription-id sub_TXXDsVmg4d3fkR`.
+Webhook setup and per-session steps: `docs/WEBHOOK.md`.
