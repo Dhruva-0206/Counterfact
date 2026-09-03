@@ -8,11 +8,11 @@ Counterfact recovers failed **subscription payments** for SaaS merchants on Razo
 Core loop: `failure context → predict uplift per action → choose max net EV (incl. no-action) → guardrails → execute → log → measure incremental ₹`
 
 ## 2. Judging bars (tick when demoable)
-- [ ] Measured money recovered **across a batch**
+- [x] Measured money recovered **across a batch** (`make eval`: 20k-failure holdout, A/B + paired exact, per merchant)
 - [ ] Compliant escalation, **stopping rules**, **audit trail**
 - [ ] **One failure handled gracefully** (API 5xx mid-retry → no double charge, backoff, logged, batch continues)
 - [ ] Every money action **explainable, bounded, gated**
-- [ ] **Honest metrics incl. false-positive cost** (wasted contacts reported voluntarily)
+- [x] **Honest metrics incl. false-positive cost** (wasted contacts, abstention, null-uplift world, sensitivity table, conservatism dial)
 - [ ] Works on **Razorpay test-mode APIs**
 
 ## 3. Architecture
@@ -40,7 +40,9 @@ Three simulator variants (`calibrated`, `misspecified`, `null_uplift`) share the
 | `make setup` | `uv sync --all-groups` (Python 3.11, pinned) | 1–2 min clean |
 | `make data` | 50k failures × 3 variants → `data/<variant>/` | ~30 s |
 | `make train` | uplift models per variant → `data/<variant>/models/` | ~1–2 min |
-| `make eval` | A/B + OPE tables/figures → `reports/` | ~2 min |
+| `make eval` | A/B + paired tables/figures → `reports/` | ~2 min |
+| `make dial` | conservatism dial (z sweep) | ~2 min |
+| `make sensitivity` | regenerate world per assumption, retrain, headline | ~15 min |
 | `make demo` | 500-failure batch with one injected 5xx | ~20 s |
 | `make test` | pytest | ~30 s |
 | `make lint` | ruff | seconds |
@@ -59,10 +61,10 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 - Every simulator assumption that moves the headline is a sensitivity knob (`OutcomeModel(overrides=...)`) with a row in `docs/EVALUATION.md`.
 
 ## 6. Current status
-**Done:** Phase 0 scaffold. Renamed to Counterfact and pushed to GitHub (origin = Dhruva-0206/Counterfact). ADR-006 equalized attempt budget with recalibration (RETRY_SCALE 1.3727). Phase 1: seeded generator (5 merchants, 8k customers, 50k failures), true outcome process with three variants and common random numbers, calibrated so Razorpay default recovers ~60%, epsilon-uniform logging policy with propensities, baselines (`no_action`, `razorpay_default`, `heuristic`), counterfactual-leak test, Checkpoint 1 table (`scripts/checkpoint1.py`).
-**In progress:** Phase 2 (features, T-learner, net-EV policy, guardrails, A/B, sensitivity table).
-**Next:** Checkpoint 2 table.
-**Known bugs:** none.
+**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines.
+**In progress:** awaiting Checkpoint 2 confirmation.
+**Next:** Phase 3 off-policy evaluation (IPS / SNIPS / DR vs A/B truth).
+**Known bugs:** none. Known limitation: A/B CIs are wide (heavy-tailed rupees); paired exact is the ground truth.
 **Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 
 ## 7. Conventions

@@ -81,6 +81,38 @@ FAILURE_SOURCE: dict[str, str] = {
     "mandate_failed": "bank",
 }
 PAYMENT_METHODS: tuple[str, ...] = ("card", "upi_autopay", "emandate", "wallet")
+FAILURE_SOURCES: tuple[str, ...] = ("customer", "bank", "gateway", "business", "razorpay")
+MERCHANT_IDS: tuple[str, ...] = (
+    "m_streambox", "m_fitpulse", "m_learnloop", "m_clouddesk", "m_scaleops",
+)
+SEGMENTS: tuple[str, ...] = ("b2c", "b2b")
+PLAN_CYCLES: tuple[str, ...] = ("monthly", "quarterly", "annual")
+BANKS: tuple[str, ...] = ("HDFC", "ICICI", "SBI", "AXIS", "KOTAK", "YES", "IDFC", "OTHER")
+
+# Fixed vocabularies for categorical features: category codes must be identical at training
+# time and at decision time, so they are never inferred from data.
+CATEGORICAL_VOCAB: dict[str, tuple[str, ...]] = {
+    "merchant_id": MERCHANT_IDS,
+    "segment": SEGMENTS,
+    "plan_cycle": PLAN_CYCLES,
+    "failure_category": FAILURE_CATEGORIES,
+    "failure_source": FAILURE_SOURCES,
+    "payment_method": PAYMENT_METHODS,
+    "bank_code": BANKS,
+}
+
+# Shipped policy estimator (ADR-007): gate on the ensemble lower confidence bound, rank on the
+# mean. z=2 reaches >= 80% abstention under null_uplift with 10-member bootstrap ensembles.
+POLICY_ESTIMATE = "gated"
+POLICY_Z = 2.0
+POLICY_N_ENSEMBLE = 10
+
+# Guardrail constants (policy/guardrails.py). Quiet hours are IST, inclusive start, exclusive end.
+MAX_RETRIES_PER_FAILURE = 3
+MAX_CONTACTS_24H = 1
+MAX_CONTACTS_7D = 3
+QUIET_HOURS_START = 21
+QUIET_HOURS_END = 8
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:

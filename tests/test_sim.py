@@ -79,6 +79,11 @@ def test_probabilities_bounded_and_coherent(population) -> None:
     # (three attempts against the 3% issuer-updater share buys at most ~2-3 points)
     assert cf.loc[ce, "p_retry_now"].mean() - cf.loc[ce, "p_no_action"].mean() < 0.03
     assert cf.loc[ce, "p_escalate_human"].mean() > cf.loc[ce, "p_no_action"].mean() + 0.2
+    # a human taking over a retry-fixable failure also re-attempts once, so escalation is never
+    # far below a single automated retry on gateway errors, yet still below the full 3-attempt plan
+    g5 = obs.failure_category == "gateway_5xx"
+    assert cf.loc[g5, "p_escalate_human"].mean() > 0.7
+    assert cf.loc[g5, "p_escalate_human"].mean() < cf.loc[g5, "p_retry_now"].mean()
 
 
 def test_null_uplift_has_no_treatment_effect(population) -> None:

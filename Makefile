@@ -2,7 +2,7 @@
 UV ?= uv
 PY := $(UV) run python
 
-.PHONY: setup data train eval demo dashboard test lint clean all
+.PHONY: setup data train eval sensitivity dial demo dashboard test lint clean all
 
 setup:            ## create venv + install pinned deps (~1-2 min on a clean machine)
 	$(UV) sync --all-groups
@@ -16,6 +16,12 @@ train:            ## fit uplift models per variant (~1-2 min)
 
 eval:             ## A/B + OPE, tables and figures into reports/ (~2 min)
 	$(PY) scripts/evaluate.py --all-variants
+
+sensitivity:      ## regenerate world per assumption, retrain, recompute headline (~15 min)
+	$(PY) scripts/sensitivity.py
+
+dial:             ## conservatism dial: lift vs null-uplift abstention across z (~2 min)
+	$(PY) scripts/z_dial.py
 
 demo:             ## end-to-end batch of 500 with one injected 5xx (~20s)
 	$(PY) scripts/run_batch.py --n 500 --inject-failure

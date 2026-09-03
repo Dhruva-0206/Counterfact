@@ -111,6 +111,8 @@ CALIBRATED: dict[str, CategoryParams] = {
 RETRY_SCALE: dict[str, float] = {"calibrated": 1.3727, "misspecified": 1.3727, "null_uplift": 1.3727}
 ATTEMPT_DECAY: dict[str, float] = {"calibrated": 0.85, "misspecified": 0.70, "null_uplift": 0.85}
 BANK_RETRY_OK, BANK_RETRY_DOWN = 0.75, 0.06
+ESCALATION_RETRY_DAY = 2.0
+"""A human who takes over a retry-fixable failure also re-attempts the charge once, at day 2."""
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -133,6 +135,7 @@ class Components:
     payday_boost: np.ndarray
     days_to_payday: np.ndarray
     is_bank: np.ndarray
+    is_fixable: np.ndarray  # human escalation includes one manual retry on these
     outage_hours: np.ndarray
     liq: np.ndarray
     decay: float
@@ -305,6 +308,7 @@ class OutcomeModel:
             payday_boost=payday_boost,
             days_to_payday=days_to_payday.astype(float),
             is_bank=cat == "bank_technical",
+            is_fixable=np.isin(cat, RETRY_FIXABLE),
             outage_hours=hidden["outage_hours"].to_numpy(),
             liq=liq,
             decay=self.decay,
@@ -322,6 +326,8 @@ class OutcomeModel:
             q_fail = np.ones_like(p_self)
             for k, t in enumerate(plan.retry_days, start=1):
                 q_fail = q_fail * (1 - np.clip(comp.retry_p(t, k) * lr, 0, P_MAX))
+            if plan.escalate:  # human also re-attempts once on retry-fixable categories
+                q_fail = q_fail * (1 - comp.is_fixable * comp.retry_p(ESCALATION_RETRY_DAY, 1))
             retry_none = comp.hard + (1 - comp.hard) * q_fail
             esc = comp.p_esc if plan.escalate else 0.0
             churn = comp.churn if (plan.message and seen) else 0.0
@@ -346,6 +352,9 @@ class OutcomeModel:
         for k, t in enumerate(plan.retry_days, start=1):
             p = np.clip(comp.retry_p(t, k) * np.where(seen, comp.lift_retry, 1.0), 0, P_MAX)
             retry_ok |= u[f"u_att{k}"].to_numpy() < p
+        if plan.escalate:
+            p = comp.is_fixable * comp.retry_p(ESCALATION_RETRY_DAY, 1)
+            retry_ok |= u["u_att1"].to_numpy() < p
         retry_ok &= ~hard_fail
         esc_ok = plan.escalate & (u["u_esc"].to_numpy() < comp.p_esc)
         recovered = ~churned & (self_ok | retry_ok | esc_ok)

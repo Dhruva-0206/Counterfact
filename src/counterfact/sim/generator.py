@@ -31,12 +31,12 @@ MERCHANTS: tuple[Merchant, ...] = (
     Merchant(merchant_id="m_learnloop", name="LearnLoop", segment="b2c", plan_amount=1_499,
              min_ev_threshold=10, escalation_amount_threshold=10_000, ops_cost=150),
     Merchant(merchant_id="m_clouddesk", name="CloudDesk", segment="b2b", plan_amount=4_999,
-             min_ev_threshold=25, escalation_amount_threshold=25_000, ops_cost=250),
+             min_ev_threshold=25, escalation_amount_threshold=40_000, ops_cost=250),
     Merchant(merchant_id="m_scaleops", name="ScaleOps", segment="b2b", plan_amount=15_000,
-             min_ev_threshold=50, escalation_amount_threshold=50_000, ops_cost=400),
+             min_ev_threshold=50, escalation_amount_threshold=100_000, ops_cost=400),
 )
 CUSTOMER_SHARE = np.array([0.36, 0.22, 0.18, 0.14, 0.10])
-BANKS = ("HDFC", "ICICI", "SBI", "AXIS", "KOTAK", "YES", "IDFC", "OTHER")
+BANKS = config.BANKS
 BANK_WEIGHTS = np.array([0.22, 0.20, 0.18, 0.12, 0.08, 0.05, 0.05, 0.10])
 METHODS_B2C = (("card", 0.45), ("upi_autopay", 0.40), ("emandate", 0.05), ("wallet", 0.10))
 METHODS_B2B = (("card", 0.35), ("upi_autopay", 0.15), ("emandate", 0.45), ("wallet", 0.05))
@@ -234,11 +234,17 @@ def generate_failures(
     return obs, hidden
 
 
-def build_dataset(settings: Settings, variant: SimVariant, out_dir: Path | None = None) -> Path:
+def build_dataset(
+    settings: Settings,
+    variant: SimVariant,
+    out_dir: Path | None = None,
+    overrides: dict[str, float] | None = None,
+) -> Path:
     """Generate, label with the true outcome process, log a randomized policy, write parquet.
 
     Writes ``failures.parquet`` (observable + logged action/outcome), ``counterfactuals.parquet``
     (hidden state, uniforms, outcome under every action), ``merchants.parquet`` and ``meta.json``.
+    ``overrides`` are simulator sensitivity knobs (see ``outcome_model.SENSITIVITY_KEYS``).
     """
     from counterfact.sim.logging_policy import EPSILON, log_actions
     from counterfact.sim.outcome_model import OutcomeModel
@@ -250,7 +256,7 @@ def build_dataset(settings: Settings, variant: SimVariant, out_dir: Path | None 
     customers = generate_customers(settings.n_customers, rng)
     obs, hidden = generate_failures(customers, settings.n_failures, rng, variant)
 
-    model = OutcomeModel(variant)
+    model = OutcomeModel(variant, overrides=overrides)
     cf = model.counterfactual_table(obs, hidden)
     logged = log_actions(obs, cf, np.random.default_rng(settings.seed + 1))
     failures = pd.concat([obs, logged], axis=1)
@@ -265,6 +271,7 @@ def build_dataset(settings: Settings, variant: SimVariant, out_dir: Path | None 
         "n_failures": int(len(failures)),
         "n_customers": int(len(customers)),
         "retry_scale": model.retry_scale,
+        "overrides": dict(overrides or {}),
         "arms": list(config.ARMS),
         "logging_epsilon": EPSILON,
     }

@@ -18,6 +18,7 @@ Filled progressively; component contracts are the docstrings of the named module
 | `agent/audit.py` | append-only JSONL + SQLite view |
 | `agent/explain.py` | LLM explanation, validated against action set |
 | `eval/ab.py`, `eval/ope.py`, `eval/report.py` | randomized A/B with bootstrap CIs; IPS/SNIPS/DR; tables + figures |
+| `eval/pipeline.py` | train (logged data only) and evaluate (counterfactual truth) one variant end to end; shared by `scripts/train.py`, `evaluate.py`, `sensitivity.py`, `z_dial.py` |
 | `api/main.py` | FastAPI: `/webhook/payment_failed`, `/decisions`, `/metrics` |
 
 ## Known limitation: test mode cannot emit failure reasons
