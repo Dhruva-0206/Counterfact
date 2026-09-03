@@ -13,7 +13,13 @@ import argparse
 import pandas as pd
 
 from recoverai.config import FAILURE_CATEGORIES, get_settings
-from recoverai.eval.report import baseline_table, format_table, load_variant, to_markdown, write_table
+from recoverai.eval.report import (
+    baseline_table,
+    format_table,
+    load_variant,
+    to_markdown,
+    write_table,
+)
 
 ACTIONS = (
     "no_action", "retry_now", "retry_delayed_1", "retry_delayed_7",
