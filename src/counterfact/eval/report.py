@@ -44,6 +44,7 @@ def policy_metrics(df: pd.DataFrame, cf: pd.DataFrame, actions: np.ndarray) -> d
     n = len(df)
     return {
         "recovery_rate": float(y.mean()),
+        "rs_at_risk_per_1k": float(amount.sum() / n * PER),
         "rs_recovered_per_1k": float((y * amount).sum() / n * PER),
         "rs_incremental_vs_no_action_per_1k": float(((y - y0) * amount).sum() / n * PER),
         "contacts_per_1k": float(contacted.sum() / n * PER),

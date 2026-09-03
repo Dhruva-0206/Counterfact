@@ -43,7 +43,8 @@ Three simulator variants (`calibrated`, `misspecified`, `null_uplift`) share the
 | `make eval` | A/B + paired tables/figures → `reports/` | ~2 min |
 | `make dial` | conservatism dial (z sweep) | ~2 min |
 | `make sensitivity` | regenerate world per assumption, retrain, headline | ~15 min |
-| `make demo` | 500-failure batch with one injected 5xx | ~20 s |
+| `make demo` | 500-failure batch with one injected 5xx | ~5 s |
+| `make dashboard` | Streamlit over audit + reports | interactive |
 | `make test` | pytest | ~30 s |
 | `make lint` | ruff | seconds |
 
@@ -61,9 +62,9 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 - Every simulator assumption that moves the headline is a sensitivity knob (`OutcomeModel(overrides=...)`) with a row in `docs/EVALUATION.md`.
 
 ## 6. Current status
-**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines. Checkpoint 2 confirmed. Phase 3 OPE (IPS/SNIPS/DM/DR; DR within A/B CI in 9/9 cells; `scripts/ope.py`, toy-case tests). Abstention self-recovery table. Phase 4: agent loop, idempotent executors (Mock + Razorpay test mode), JSONL+SQLite audit with execution ledger, failure injection + re-drive, Claude/template explanations with validator and cache, FastAPI surface, `make demo` (Checkpoint 4). Drifted variant (ADR-014): ML beats the rule table by 32% under merchant drift.
-**In progress:** Phase 5 dashboard + docs + demo script.
-**Next:** final README polish, DEMO_SCRIPT.md, submission.
+**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines. Checkpoint 2 confirmed. Phase 3 OPE (IPS/SNIPS/DM/DR; DR within A/B CI in 9/9 cells; `scripts/ope.py`, toy-case tests). Abstention self-recovery table. Phase 4: agent loop, idempotent executors (Mock + Razorpay test mode), JSONL+SQLite audit with execution ledger, failure injection + re-drive, Claude/template explanations with validator and cache, FastAPI surface, `make demo` (Checkpoint 4). Drifted variant (ADR-014): ML beats the rule table by 32% under merchant drift. Phase 5: Streamlit dashboard (`make dashboard`, headless test), `docs/DEMO_SCRIPT.md`, README with pitch line and limitations.
+**In progress:** nothing; submission-ready pending user review.
+**Next:** optional polish (live Razorpay/Anthropic run with keys), final read-through of README and DEMO_SCRIPT.
 **Known bugs:** none. Known limitation: A/B CIs are wide (heavy-tailed rupees); paired exact is the ground truth.
 **Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 

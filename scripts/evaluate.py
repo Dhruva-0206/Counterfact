@@ -37,19 +37,22 @@ def plot_paired(paired: pd.DataFrame, ab: pd.DataFrame, variant: str, path) -> N
     lakh = 1e5
     fig, ax = plt.subplots(figsize=(7.5, 3.4))
     y = list(range(len(t)))
-    colors = ["#2A9D8F" if p == "ml_policy" else "#8D99AE" for p in t["policy"]]
+    palette = {"ml_policy": "#2a78d6", "heuristic": "#eb6834", "oracle": "#1baf7a", "razorpay_t123": "#9a9891"}
+    colors = [palette.get(p, "#9a9891") for p in t["policy"]]
     ax.barh(y, t["paired_exact_per_1k"] / lakh, color=colors)
     ml = ab[ab["policy"] == "ml_policy"]
     if len(ml):
         i = int(t.index[t["policy"] == "ml_policy"][0])
         est = ml["incr_vs_control_per_1k"].iloc[0] / lakh
         ax.errorbar([est], [i], xerr=[[est - ml["ci_low"].iloc[0] / lakh], [ml["ci_high"].iloc[0] / lakh - est]],
-                    fmt="o", color="#111", capsize=4, label="two-arm randomized A/B, 95% CI")
+                    fmt="o", color="#0b0b0b", capsize=4, label="two-arm randomized A/B, 95% CI")
         ax.legend(loc="lower right", fontsize=8)
     ax.set_yticks(y)
     ax.set_yticklabels(["ML policy (gated z=2)", "rule table (guardrailed)", "literal T+1/T+2/T+3", "oracle (true probs)"])
     ax.invert_yaxis()
-    ax.axvline(0, color="#888", lw=1)
+    ax.axvline(0, color="#52514e", lw=1)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(axis="x", color="#e5e4e0", lw=0.6)
     ax.set_xlabel("Rs lakh incremental vs razorpay_default per 1,000 failures (paired exact)")
     ax.set_title(f"Holdout, variant = {variant}")
     fig.tight_layout()
