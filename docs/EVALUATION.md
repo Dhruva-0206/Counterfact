@@ -293,6 +293,65 @@ Reading the table:
   measuring against `razorpay_default` as defined in ADR-006 is the conservative choice.
 - Abstention under `calibrated` stays between 10.7% and 15.7% across the grid.
 
+
+## The `drifted` variant: merchant-specific departures from the taxonomy (ADR-014)
+Same population and features as `calibrated`; two merchants' failures no longer follow the
+category rules the rule table was written for (`sim/outcome_model.py::DRIFT`):
+
+| merchant | category | what changed | what now works |
+|---|---|---|---|
+| FitPulse (B2C, Rs 999) | bank_technical | behaves like insufficient funds; no outage clock | later retries, payday effect |
+| FitPulse | insufficient_funds | reminders backfire (lift 0.7-0.8x) and quadruple churn | plain retry schedule |
+| ScaleOps (B2B, Rs 15k/seat) | insufficient_funds | retries before day 7 fail (weekly AP run); payday irrelevant | `retry_delayed(7)` |
+| ScaleOps | mandate_failed | retries fail (hard 0.90); AP team must re-approve | `escalate_human` (0.70) |
+
+Razorpay default recovers 58.5% on the drifted holdout without re-tuning.
+
+| variant | policy | Rs incr vs razorpay_default /1k | Rs incr vs no_action /1k | recovery delta vs razorpay | raw recovery | abstention | contacts /1k | wasted contacts /1k | escalations /1k |
+|---|---|---|---|---|---|---|---|---|---|
+| drifted | **ml_policy** | **817,943** | 3,022,934 | **+6.4%** | 64.8% | 13.1% | 107 | 24 | 233 |
+| drifted | razorpay_default | 0 | 2,204,991 | +0.0% | 58.5% | 0.0% | 0 | 0 | 0 |
+| drifted | razorpay_t123 | -186,766 | 2,018,225 | -0.9% | 57.5% | 0.0% | 0 | 0 | 0 |
+| drifted | heuristic | 617,497 | 2,822,488 | +7.4% | 65.9% | 6.6% | 342 | 106 | 207 |
+| drifted | heuristic_raw | 591,226 | 2,796,217 | +7.4% | 65.9% | 6.9% | 450 | 139 | 179 |
+| drifted | no_action | -2,204,991 | 0 | -34.8% | 23.7% | 100.0% | 0 | 0 | 0 |
+| drifted | oracle | 1,188,558 | 3,393,549 | +11.8% | 70.3% | 0.0% | 162 | 56 | 274 |
+
+Two-arm randomized A/B (ml_policy vs razorpay_default, 10,009 per arm): **+847,510** [418,071; 1,233,256].
+Doubly-robust OPE from logged data: ml_policy -0.5% vs truth, heuristic -0.3%, razorpay_default
+-1.0%; DR differences inside the A/B interval in all three cells (12/12 across four variants).
+
+Per merchant (paired exact vs razorpay_default):
+
+| merchant | policy | recovery | Rs incr /1k | contacts /1k | escalations /1k | abstention |
+|---|---|---|---|---|---|---|
+| FitPulse (drifted) | ml_policy | 61.6% | 148,262 | 69 | 229 | 15.2% |
+| FitPulse (drifted) | heuristic | 60.2% | 126,589 | 329 | 223 | 6.8% |
+| ScaleOps (drifted) | ml_policy | 74.6% | 6,702,641 | 53 | 416 | 5.6% |
+| ScaleOps (drifted) | heuristic | 68.5% | 4,282,147 | 328 | 234 | 6.8% |
+| StreamBox | ml_policy | 61.9% | 27,975 | 110 | 135 | 16.2% |
+| StreamBox | heuristic | 65.9% | 44,480 | 362 | 176 | 6.8% |
+| LearnLoop | ml_policy | 64.6% | 192,374 | 140 | 250 | 11.7% |
+| LearnLoop | heuristic | 66.5% | 222,322 | 326 | 224 | 6.3% |
+| CloudDesk | ml_policy | 73.5% | 1,308,363 | 158 | 395 | 6.5% |
+| CloudDesk | heuristic | 74.1% | 1,336,819 | 343 | 232 | 6.3% |
+
+Reading the result: on the two drifted merchants the learner wins outright (FitPulse +17%,
+ScaleOps +57% on rupees; +6 recovery points on ScaleOps) because it learned the merchant x
+category interaction from logged data; on the three untouched merchants the picture is the same
+as under `calibrated` (a tie within a few percent, at a third of the contacts). Overall: ML
+Rs 818k vs rule table Rs 617k per 1,000 failures, 107 vs 342 reminders. Abstention 13.1%, of
+which 22.7% self-recovered (Rs 49.7k per 1k foregone). The conservatism dial column for
+`drifted` is in `reports/tables/z_dial.csv` (point estimate Rs 915k, gated z=2 Rs 818k).
+
+### The pitch line, clause by clause
+"Matches a rule table written with perfect knowledge of the failure taxonomy" - calibrated Rs
+576k vs Rs 594k per 1k (-3%), misspecified Rs 559k vs Rs 641k (-13%). "Using 63-83% fewer
+reminders" - 127 vs 342 (calibrated, -63%), 58 vs 342 (misspecified, -83%). "Abstains correctly
+when nothing works" - null_uplift: 80.9% no-action, 4 reminders per 1k, Rs -202 per 1k vs the
+rule table's 342 reminders and Rs -10,399. "Beats it when merchants diverge from the taxonomy" -
+drifted: Rs 818k vs Rs 617k per 1k (+32%), A/B CI excludes zero. All from `make eval`.
+
 ## Checkpoint 3: off-policy evaluation vs truth vs A/B (`python scripts/ope.py --all-variants`)
 Test a policy without exposing a customer: from the logged holdout rows (epsilon-uniform logging
 policy, stored propensities) alone, estimate what each policy would have earned, then compare with

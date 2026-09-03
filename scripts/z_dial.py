@@ -13,7 +13,7 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from counterfact.config import POLICY_Z, get_settings  # noqa: E402
+from counterfact.config import POLICY_Z, SIM_VARIANTS, get_settings  # noqa: E402
 from counterfact.eval.pipeline import evaluate_variant  # noqa: E402
 from counterfact.eval.report import to_markdown  # noqa: E402
 
@@ -25,7 +25,7 @@ def main() -> None:
     rows = []
     for estimate, z in GRID:
         rec: dict[str, object] = {"estimate": estimate, "z": z}
-        for variant in ("calibrated", "misspecified", "null_uplift"):
+        for variant in SIM_VARIANTS:
             p = evaluate_variant(settings, variant, estimate, z, n_boot=50)["paired"].set_index("policy")
             rec[f"{variant}_incr_per_1k"] = float(p.loc["ml_policy", "paired_exact_per_1k"])
             rec[f"{variant}_abstention"] = float(p.loc["ml_policy", "no_action_share"])

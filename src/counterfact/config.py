@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
 REPORTS_DIR = ROOT / "reports"
 
-SimVariant = Literal["calibrated", "misspecified", "null_uplift"]
-SIM_VARIANTS: tuple[SimVariant, ...] = ("calibrated", "misspecified", "null_uplift")
+SimVariant = Literal["calibrated", "misspecified", "null_uplift", "drifted"]
+SIM_VARIANTS: tuple[SimVariant, ...] = ("calibrated", "misspecified", "null_uplift", "drifted")
 
 # ---- Action space: exactly five arms. Do not expand. ---------------------------------------
 ARMS: tuple[str, ...] = (

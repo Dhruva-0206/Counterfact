@@ -121,3 +121,23 @@ def test_logging_policy_propensities(population) -> None:
     for i in range(0, N, 97):
         name = logged.loc[i, "action_name"]
         assert bool(logged.loc[i, "recovered"]) == bool(cf.loc[i, f"y_{name}"])
+
+
+def test_drifted_variant_departs_from_taxonomy_only_for_drifted_merchants(population) -> None:
+    obs, hidden = population
+    base = OutcomeModel("calibrated").counterfactual_table(obs, hidden)
+    drift = OutcomeModel("drifted").counterfactual_table(obs, hidden)
+    m, c = obs.merchant_id, obs.failure_category
+    untouched = ~(((m == "m_fitpulse") & c.isin(["bank_technical", "insufficient_funds"]))
+                  | ((m == "m_scaleops") & c.isin(["insufficient_funds", "mandate_failed"])))
+    for name in ("no_action", "retry_delayed_1", "remind_and_retry", "escalate_human"):
+        np.testing.assert_allclose(drift.loc[untouched, f"p_{name}"], base.loc[untouched, f"p_{name}"])
+    # FitPulse: reminders on insufficient funds now hurt relative to the plain schedule
+    fp_if = (m == "m_fitpulse") & (c == "insufficient_funds")
+    assert drift.loc[fp_if, "p_remind_and_retry"].mean() < drift.loc[fp_if, "p_retry_delayed_1"].mean()
+    assert base.loc[fp_if, "p_remind_and_retry"].mean() > base.loc[fp_if, "p_retry_delayed_1"].mean()
+    # ScaleOps: insufficient funds only recover on the day-7 cycle; mandates need a human
+    so_if = (m == "m_scaleops") & (c == "insufficient_funds")
+    assert drift.loc[so_if, "p_retry_delayed_7"].mean() > drift.loc[so_if, "p_retry_delayed_1"].mean() + 0.2
+    so_md = (m == "m_scaleops") & (c == "mandate_failed")
+    assert drift.loc[so_md, "p_escalate_human"].mean() > drift.loc[so_md, "p_retry_delayed_3"].mean() + 0.2

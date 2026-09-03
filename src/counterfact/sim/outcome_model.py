@@ -19,6 +19,12 @@ Variants
 ``null_uplift``   No arm has any causal effect on recovery (retries never succeed beyond
                   self-serve, messages do not lift, escalation resolves nothing). Messages can
                   still cause churn. The correct policy is to abstain.
+``drifted``       Calibrated everywhere except two merchants whose failures depart from the
+                  taxonomy (see ``DRIFT``): FitPulse bank errors behave like insufficient funds
+                  and its customers churn when reminded about insufficient funds; ScaleOps
+                  insufficient-funds failures only recover on the day-7 invoice cycle and its
+                  failed mandates need a human. Merchant id is a feature, so a learner can pick
+                  this up; a category rule table cannot.
 
 This module must never be imported by ``counterfact.features`` or ``counterfact.models``.
 """
@@ -108,8 +114,20 @@ CALIBRATED: dict[str, CategoryParams] = {
 
 # Global multiplier on retry success, tuned by `calibrate_retry_scale` so that the Razorpay
 # default schedule recovers ~60% under `calibrated`. See docs/EVALUATION.md.
-RETRY_SCALE: dict[str, float] = {"calibrated": 1.3727, "misspecified": 1.3727, "null_uplift": 1.3727}
-ATTEMPT_DECAY: dict[str, float] = {"calibrated": 0.85, "misspecified": 0.70, "null_uplift": 0.85}
+RETRY_SCALE: dict[str, float] = {"calibrated": 1.3727, "misspecified": 1.3727, "null_uplift": 1.3727, "drifted": 1.3727}
+ATTEMPT_DECAY: dict[str, float] = {"calibrated": 0.85, "misspecified": 0.70, "null_uplift": 0.85, "drifted": 0.85}
+
+# Merchant-specific departures from the taxonomy for the `drifted` variant (ADR-014).
+DRIFT: dict[tuple[str, str], dict[str, object]] = {
+    # bank errors at FitPulse are really liquidity problems: IF dynamics, no outage clock
+    ("m_fitpulse", "bank_technical"): {"like": "insufficient_funds"},
+    # FitPulse customers resent reminders about money: reminder backfires and drives churn
+    ("m_fitpulse", "insufficient_funds"): {"lift_self": 0.8, "lift_retry": 0.7, "churn_mult": 4.0},
+    # ScaleOps pays invoices on a weekly AP run: early retries fail, day 7 works, payday irrelevant
+    ("m_scaleops", "insufficient_funds"): {"retry": (0.05, 0.05, 0.05, 0.08, 0.60), "payday_boost": 1.0},
+    # ScaleOps mandates need the AP team to re-approve: retries fail, a human fixes it
+    ("m_scaleops", "mandate_failed"): {"hard": 0.90, "esc0": 0.70, "self0": 0.10},
+}
 BANK_RETRY_OK, BANK_RETRY_DOWN = 0.75, 0.06
 ESCALATION_RETRY_DAY = 2.0
 """A human who takes over a retry-fixable failure also re-attempts the charge once, at day 2."""
@@ -295,6 +313,43 @@ class OutcomeModel:
             lift_retry = np.ones_like(lift_retry)
             p_esc = np.zeros_like(p_esc)
 
+        is_bank = cat == "bank_technical"
+        if v == "drifted":
+            merchant = obs["merchant_id"].to_numpy().astype(str)
+            fatigue = np.maximum(0.0, 1 - 0.3 * contacts7)
+            for (mid, cat_name), spec in DRIFT.items():
+                m = (merchant == mid) & (cat == cat_name)
+                if not m.any():
+                    continue
+                old = self.params[cat_name]
+                if "like" in spec:
+                    tgt = self.params[str(spec["like"])]
+                    hard[m] = tgt.hard
+                    p_self[m] = p_self[m] * (tgt.self0 / old.self0)
+                    base_retry[m] = np.array(tgt.retry)
+                    payday_boost[m] = tgt.payday_boost
+                    lift_self[m] = 1 + (tgt.lift_self - 1) * fatigue[m]
+                    lift_retry[m] = 1 + (tgt.lift_retry - 1) * fatigue[m]
+                    p_esc[m] = p_esc[m] * (tgt.esc0 / old.esc0)
+                    is_bank[m] = False
+                    continue
+                if "hard" in spec:
+                    hard[m] = float(spec["hard"])
+                if "self0" in spec:
+                    p_self[m] = p_self[m] * (float(spec["self0"]) / old.self0)
+                if "retry" in spec:
+                    base_retry[m] = np.array(spec["retry"], dtype=float)
+                if "payday_boost" in spec:
+                    payday_boost[m] = float(spec["payday_boost"])
+                if "lift_self" in spec:
+                    lift_self[m] = 1 + (float(spec["lift_self"]) - 1) * fatigue[m]
+                if "lift_retry" in spec:
+                    lift_retry[m] = 1 + (float(spec["lift_retry"]) - 1) * fatigue[m]
+                if "churn_mult" in spec:
+                    churn[m] = churn[m] * float(spec["churn_mult"])
+                if "esc0" in spec:
+                    p_esc[m] = p_esc[m] * (float(spec["esc0"]) / old.esc0)
+
         return Components(
             hard=np.clip(hard, 0, 1),
             p_self=np.clip(p_self, 0, P_MAX),
@@ -307,7 +362,7 @@ class OutcomeModel:
             base_retry=base_retry,
             payday_boost=payday_boost,
             days_to_payday=days_to_payday.astype(float),
-            is_bank=cat == "bank_technical",
+            is_bank=is_bank,
             is_fixable=np.isin(cat, RETRY_FIXABLE),
             outage_hours=hidden["outage_hours"].to_numpy(),
             liq=liq,
