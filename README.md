@@ -104,6 +104,8 @@ cached); a validator rejects any text naming an arm outside the action set and f
 deterministic template. `RazorpayExecutor` maps the arms to test-mode endpoints
 (`payment.createRecurring`, `invoice.notify_by`, `subscription.fetch`, webhook HMAC); see
 `docs/ARCHITECTURE.md` for the limitation that test mode cannot emit the failure taxonomy.
+What was actually proven against the live API, what is blocked by account enablement, and the
+command that regenerates each row: `docs/LIVE_VERIFICATION.md`.
 
 ## Phase 1 results: baselines under three simulator variants
 Per 1,000 failed payments, seed 42, 50,000 failures. `razorpay_default` is Razorpay's automatic

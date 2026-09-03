@@ -25,30 +25,38 @@ from `error_reason` (unknown reasons fall back to `bank_technical`).
    webhook. It is shown once at generation time and never logged.
 3. Test objects: `python scripts/razorpay_setup.py` creates the plan and subscription and records
    their ids in `data/razorpay_test.json` and `docs/DEMO_SCRIPT.md`.
-4. ngrok: install it (Windows: `winget install ngrok.ngrok`, or download from ngrok.com), then
-   `ngrok config add-authtoken <token from dashboard.ngrok.com>`. Verify with `ngrok config check`.
+4. A tunnel, so Razorpay can reach localhost. **cloudflared is the one this project uses**
+   (`winget install Cloudflare.cloudflared`): no account, no signup, no authtoken. ngrok also works
+   but needs an account, and on this machine the current agent is blocked by Windows Smart App
+   Control (ADR-019).
 5. Razorpay dashboard (Test Mode toggle on): Settings -> Webhooks -> Add New Webhook. URL =
-   `https://<ngrok-subdomain>.ngrok-free.app/webhook/payment_failed`, secret = the value from
+   `https://<tunnel-host>/webhook/payment_failed`, secret = the value from
    step 2, active events: `payment.failed`, `payment.captured`, `subscription.pending`,
-   `subscription.halted`, `subscription.charged`.
+   `subscription.halted`, `subscription.charged`, `payment_link.paid`.
 
 ## Per session
 1. Terminal 1: `COUNTERFACT_EXECUTOR=razorpay uv run uvicorn counterfact.api.main:app --port 8000`
    (omit the env var to use the mock executor; decisions and audit rows are identical, only the
    provider calls differ).
-2. Terminal 2: `ngrok http 8000`. Copy the `https://...ngrok-free.app` forwarding URL.
-3. Razorpay dashboard: edit the webhook URL to `<forwarding URL>/webhook/payment_failed` (the
-   ngrok subdomain changes on every restart on the free plan).
-4. Verify one event: open the subscription's authentication link (`data/razorpay_test.json`,
+2. Terminal 2: `cloudflared tunnel --url http://localhost:8000`. Copy the
+   `https://<random-words>.trycloudflare.com` URL it prints.
+3. Razorpay dashboard: edit the webhook URL to `<tunnel URL>/webhook/payment_failed` (a quick
+   tunnel gets a new hostname on every restart, same as ngrok's free plan).
+4. Verify the tunnel before touching the dashboard:
+   `curl https://<tunnel-host>/health` must return `{"status":"ok",...,"executor":"razorpay"}`, then
+   `python scripts/webhook_selftest.py --url https://<tunnel-host>/webhook/payment_failed` must
+   print `tampered signature -> HTTP 401` and `signed request -> HTTP 200`. That proves the public
+   path, the signature check and the audit write without involving Razorpay at all.
+5. Verify one real event: open the subscription's authentication link (`data/razorpay_test.json`,
    `short_url`) and pay with the failure card `4100 2800 0008 0001` (any future expiry, any CVV).
    Razorpay emits `payment.failed`; the uvicorn log shows the signed request, the signature check,
    and the audit row (`GET /decisions?limit=1`).
-5. Local self-check without ngrok: `python scripts/webhook_selftest.py` signs a Razorpay-shaped
-   `payment.failed` body with the `.env` secret, POSTs it to `localhost:8000`, and shows the audit
-   row; it also confirms that a tampered signature is rejected with 401.
+6. Local self-check with no tunnel at all: `python scripts/webhook_selftest.py` signs a
+   Razorpay-shaped `payment.failed` body with the `.env` secret, POSTs it to `localhost:8000`, and
+   shows the audit row; it also confirms that a tampered signature is rejected with 401.
 
 ## Before recording
-- Restarting ngrok changes the public URL: update the webhook URL in the dashboard first, then
+- Restarting the tunnel changes the public URL: update the webhook URL in the dashboard first, then
   send one test event and check `GET /decisions?limit=1` before you press record.
 - Keep the Razorpay dashboard in Test Mode; a Live Mode webhook uses a different secret and hits
   live endpoints, which the executor refuses.
@@ -56,3 +64,5 @@ from `error_reason` (unknown reasons fall back to `bank_technical`).
   `.env` and the dashboard (or the dashboard webhook was created in Live Mode); a 404 means the URL
   path is wrong (must end in `/webhook/payment_failed`); a 422 means the body was not a Razorpay
   event and not our schema.
+- A `502` or `error 1033` from the tunnel host means the uvicorn process died; restart terminal 1.
+  The tunnel survives it, the URL does not change.

@@ -13,7 +13,7 @@ Core loop: `failure context → predict uplift per action → choose max net EV 
 - [x] **One failure handled gracefully** (`make demo`: injected 5xx -> backoff -> queued -> batch continues -> re-driven under the same key; duplicate charges = 0, tested)
 - [x] Every money action **explainable, bounded, gated** (bounded plans, net-EV gate, guardrails, template/Claude explanations validated against the action set)
 - [x] **Honest metrics incl. false-positive cost** (wasted contacts, abstention, null-uplift world, sensitivity table, conservatism dial)
-- [x] Works on **Razorpay test-mode APIs** (live 2026-09-03: Payment Links executed one per key through an injected transport fault, `subscription.fetch`, `invoice.all`, `order.create`, HMAC-verified webhook -> audit row, `payment_link.paid` -> outcome; createRecurring blocked by account enablement, ADR-015/018)
+- [x] Works on **Razorpay test-mode APIs** (live 2026-09-03: Payment Links executed one per key through an injected transport fault, zero duplicates confirmed Razorpay-side, `subscription.fetch`, `invoice.all`, `order.create`, HMAC-verified webhook over a public tunnel -> audit row; createRecurring blocked by account enablement. Row-by-row: `docs/LIVE_VERIFICATION.md`)
 
 ## 3. Architecture
 
@@ -62,18 +62,45 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 - Every simulator assumption that moves the headline is a sensitivity knob (`OutcomeModel(overrides=...)`) with a row in `docs/EVALUATION.md`.
 
 ## 6. Current status
-**Done (all pushed, HEAD bcb9525):** Phases 0-5, drifted variant, live verification pass:
-- Step 1 explanations: live `claude-haiku-4-5`, 10/10 validated (validator v2: chosen action named, no other arm recommended, no out-of-set action, no-action baseline stated as a %, no certainty language above a 5% baseline), cached, 0 API calls on re-run (ADR-016/017).
-- Step 2 live executor, three paths (ADR-015/018): Payment Link = live executed (4 links on customer `cust_SyobLyHEnrJxSn`, one per idempotency key, one after an injected transport fault, one queued->re-driven; `scripts/verify_charges.py` confirms one link per key); Subscriptions retry arms = deferred/skipped with Razorpay's schedule; tokenised `createRecurring` = implemented + tested, blocked on the account: `POST /v1/payments/create/recurring` (and S2S `/payments/create/json`) return `BadRequestError: The requested URL was not found on the server` (Recurring Payments not enabled).
-- Step 3 webhook, local half: `POST /webhook/payment_failed`, secret `RAZORPAY_WEBHOOK_SECRET` set in .env (generated 2026-09-03, shown once), signed self-test passes (`scripts/webhook_selftest.py`: tampered -> 401, signed -> 200 + audit row), real Razorpay payloads translated (`razorpay_event_to_context`), `payment_link.paid` -> outcome on the decision. API server runs with `COUNTERFACT_EXECUTOR=razorpay uv run uvicorn counterfact.api.main:app --port 8000`.
-- Live test objects: plan `plan_TXXDsJxh3gYvKA`, subscription `sub_TXXDsVmg4d3fkR` (active, customer `cust_SyobLyHEnrJxSn`, token `token_TXXXCyI5Tx3WDS`), registration link `https://rzp.io/rzp/G4VFnmq2` (customer `cust_TXXUJrWXkXmEyw`, unused); `data/razorpay_test.json`.
-- Docs: WEBHOOK.md, JUDGE_QA.md, ADR-015..018, README/ARCHITECTURE/DEMO_SCRIPT three executor paths.
+**Done (Phases 0-5, drifted variant, live verification):** full pass/fail table with a regenerate
+command per row in `docs/LIVE_VERIFICATION.md`. Summary:
+- Explanations: live `claude-haiku-4-5`, 10/10 validated, 0 failing re-validation, cached, 0 API
+  calls on re-run (ADR-016/017).
+- Executor, three paths (ADR-015/018): Payment Links = live executed (4 links on customer
+  `cust_SyobLyHEnrJxSn`, one per idempotency key, `evt_000007` executed on attempt 2 after an
+  injected transport fault; `scripts/verify_charges.py` confirms one link per key Razorpay-side,
+  zero duplicates). Subscriptions retry arms = 13 `deferred`/`skipped` with Razorpay's own refusal
+  text, never reported executed. `escalate_human` = 7 executed via `subscription.fetch`. Tokenised
+  `createRecurring` = implemented and tested, blocked by the account: `POST
+  /v1/payments/create/recurring` returns `BadRequestError: The requested URL was not found on the
+  server` (Recurring Payments not enabled).
+- Webhook: `POST /webhook/payment_failed`, HMAC verified, tampered -> 401, signed -> 200 + audit
+  row, proven locally and over the public tunnel. Razorpay payloads translated by
+  `razorpay_event_to_context`; `payment_link.paid` -> outcome on the decision.
+- Tunnel: **cloudflared, not ngrok** (ADR-019). `winget install Cloudflare.cloudflared`, then
+  `cloudflared tunnel --url http://localhost:8000`. No account, no authtoken, passes Smart App
+  Control. ngrok is dead on this machine: agent 3.3.1 < account minimum 3.20.0 (ERR_NGROK_121), and
+  the updated 3.39.11 binary is blocked by Windows Smart App Control.
+- 87 tests pass, ruff clean.
+- Live test objects: plan `plan_TXXDsJxh3gYvKA`, subscription `sub_TXXDsVmg4d3fkR` (active, customer
+  `cust_SyobLyHEnrJxSn`, token `token_TXXXCyI5Tx3WDS`), registration link
+  `https://rzp.io/rzp/G4VFnmq2` (customer `cust_TXXUJrWXkXmEyw`, unused); `data/razorpay_test.json`.
+- Docs: LIVE_VERIFICATION.md, WEBHOOK.md, JUDGE_QA.md, ADR-015..019, README/ARCHITECTURE/DEMO_SCRIPT.
 
-**Blocked:** ngrok tunnel. Installed agent 3.3.1 is below the account minimum 3.20.0 (ERR_NGROK_121). `ngrok update` installed 3.39.11 but Windows Application Control (Smart App Control) blocks it: "An Application Control policy has blocked this file. Malicious binary reputation". `winget upgrade ngrok.ngrok` reports no newer version. Binary path: `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe`. Needs a user decision: allow the binary in Windows Security (App & browser control -> Smart App Control), or use another tunnel (e.g. `winget install Cloudflare.cloudflared` then `cloudflared tunnel --url http://localhost:8000`, no account needed), or run the tunnel from another machine.
+**Left, both needing the Razorpay dashboard (rows 13-14 of the verification table):**
+1. Start the server and tunnel, verify with `scripts/webhook_selftest.py --url https://<host>/webhook/payment_failed`,
+   then create the Test Mode webhook: URL `https://<host>/webhook/payment_failed`, secret =
+   `RAZORPAY_WEBHOOK_SECRET` from `.env`, events `payment.failed, payment.captured,
+   subscription.pending, subscription.halted, subscription.charged, payment_link.paid`.
+2. Trigger a failing payment (card 4100 2800 0008 0001) -> show the uvicorn log + audit row; pay one
+   Payment Link with a test card -> show `payment_link.paid` -> outcome. Then flip rows 13-14 to
+   pass and `git tag v1.0`.
 
-**Left, in order:** (1) tunnel up -> hand over `https://<tunnel>/webhook/payment_failed` + events `payment.failed, payment.captured, subscription.pending, subscription.halted, subscription.charged, payment_link.paid`; (2) user creates the Test Mode webhook with the secret; (3) trigger a failing payment (card 4100 2800 0008 0001) and show the uvicorn log + audit row; (4) user pays one Payment Link with a test card -> show `payment_link.paid` -> outcome; (5) final pass/fail table; (6) `git tag v1.0`, final CLAUDE.md, push.
-**Known bugs:** none open. Note: `--tokenized-events` rows show `failed` (404) by design until Recurring Payments is enabled.
-**Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool. `make`/`gh` absent; ngrok at the WinGet path above.
+**Known bugs:** none open. `--tokenized-events` rows show `failed` (404) by design until Recurring
+Payments is enabled.
+**Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the
+Write tool. `make`/`gh` absent, use `.\make.ps1`. cloudflared at
+`C:\Program Files (x86)\cloudflared\cloudflared.exe`.
 
 ## 7. Conventions
 - Python 3.11, type hints, `ruff` clean, docstrings on public functions.
