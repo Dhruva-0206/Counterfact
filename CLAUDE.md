@@ -61,9 +61,9 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 - Every simulator assumption that moves the headline is a sensitivity knob (`OutcomeModel(overrides=...)`) with a row in `docs/EVALUATION.md`.
 
 ## 6. Current status
-**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines.
-**In progress:** awaiting Checkpoint 2 confirmation.
-**Next:** Phase 3 off-policy evaluation (IPS / SNIPS / DR vs A/B truth).
+**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines. Checkpoint 2 confirmed. Phase 3 OPE (IPS/SNIPS/DM/DR; DR within A/B CI in 9/9 cells; `scripts/ope.py`, toy-case tests). Abstention self-recovery table.
+**In progress:** Phase 4 (agent loop, executor with idempotency, audit, injected 5xx, LLM explanations).
+**Next:** drifted variant (60 min), then Phase 5 dashboard + docs.
 **Known bugs:** none. Known limitation: A/B CIs are wide (heavy-tailed rupees); paired exact is the ground truth.
 **Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 

@@ -69,7 +69,7 @@ def main() -> None:
     settings = get_settings()
     variants = list(SIM_VARIANTS) if args.all_variants else [args.variant or settings.sim_variant]
 
-    keys = ("ab", "paired", "per_merchant", "arm_mix", "guardrails")
+    keys = ("ab", "paired", "per_merchant", "arm_mix", "guardrails", "abstention")
     all_tables: dict[str, list[pd.DataFrame]] = {k: [] for k in keys}
     for v in variants:
         tables = evaluate_variant(settings, v, args.estimate, args.z, args.n_boot)
@@ -87,6 +87,11 @@ def main() -> None:
     print(to_markdown(fmt(merged["arm_mix"])))
     print("\n## guardrail rejections per 1k (ml_policy)")
     print(to_markdown(fmt(merged["guardrails"])))
+    print("\n## abstentions (ml_policy): was no_action right?")
+    ab_t = merged["abstention"].copy()
+    for c in ("abstention_share", "self_recovered", "razorpay_would_recover"):
+        ab_t[c] = ab_t[c].map(lambda x: f"{x:.1%}")
+    print(to_markdown(fmt(ab_t)))
     pm = merged["per_merchant"][merged["per_merchant"]["policy"].isin(["ml_policy", "heuristic"])]
     print("\n## per merchant (paired exact, vs razorpay_default)")
     print(to_markdown(fmt(pm)))

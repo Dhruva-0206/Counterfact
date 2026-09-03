@@ -35,16 +35,26 @@ calibrated **+617,938** [192,676; 1,015,642]; misspecified **+537,563** [102,053
 null_uplift -16,475 [-301,636; 288,010].
 
 What the table says: the policy beats Razorpay's default by 5.7-6.1 recovery points (about Rs 5.8
-lakh per 1,000 failures on this portfolio) with a significant A/B; it ties a well-written rule
-table on rupees while sending 63-83% fewer reminders and wasting 74-85% fewer; and in a world
-where no intervention works it abstains on 81% of failures (the rest are guardrail-mandated
-escalations) and loses nothing, where the rule table keeps sending 342 reminders per 1,000.
+lakh per 1,000 failures on this portfolio) with a significant A/B; it ties the rule table on
+rupees while sending 63-83% fewer reminders and wasting 74-85% fewer; and in a world where no
+intervention works it abstains on 81% of failures (the rest are guardrail-mandated escalations)
+and loses nothing, where the rule table keeps sending 342 reminders per 1,000. The rule table is
+an oracle-informed competitor: it was written with knowledge of the simulator's true per-category
+probabilities, which no merchant has. The `drifted` variant (merchants whose failures depart from
+the taxonomy) is where the two are expected to separate.
 
 The confidence gate is a dial (`make dial`, `reports/figures/z_dial.png`): the plain point
 estimate earns 13-26% more when uplift is real but intervenes on 77% of failures when it is not.
 A sensitivity sweep over every simulator assumption that moves the headline (19 settings,
 `make sensitivity`) keeps the ranking oracle >= ML > Razorpay default in all of them; details,
 per-merchant tables and guardrail activity in `docs/EVALUATION.md`.
+
+**Off-policy evaluation (Phase 3).** From logged data alone (recorded propensities), the
+doubly-robust estimate of each policy's value lands within 0.6-3.2% of the paired-exact truth on
+rupees for the ML policy, the rule table and Razorpay default under every variant, and its
+difference vs Razorpay default sits inside the randomized A/B interval in 9 of 9 cells; plain
+IPS drifts by up to 13% where the target policy rarely matches the logged action. Table:
+`python scripts/ope.py --all-variants`, `docs/EVALUATION.md`.
 
 ![A/B, calibrated](reports/figures/ab_calibrated.png)
 ![conservatism dial](reports/figures/z_dial.png)

@@ -176,7 +176,57 @@ def evaluate_variant(
     )
     guard_summary.insert(0, "variant", variant)
     guard_summary["per_1k"] = guard_summary["count"] / len(df) * PER
-    return {"ab": ab, "paired": paired, "per_merchant": merch, "arm_mix": arm_mix, "guardrails": guard_summary}
+    abst = abstention_table(df, cf, run.actions)
+    abst.insert(0, "variant", variant)
+    return {"ab": ab, "paired": paired, "per_merchant": merch, "arm_mix": arm_mix,
+            "guardrails": guard_summary, "abstention": abst}
+
+
+def abstention_table(df: pd.DataFrame, cf: pd.DataFrame, actions: np.ndarray) -> pd.DataFrame:
+    """What happened on the rows where the policy chose ``no_action``.
+
+    ``self_recovered`` is the "no_action was right" rate; ``razorpay_would_recover`` is what the
+    incumbent schedule would have recovered on the same rows; ``foregone_per_1k`` is the paired
+    rupee difference on those rows, spread over all rows (so it is comparable to the headline).
+    """
+    mask = actions == "no_action"
+    amount = df["amount"].to_numpy(dtype=float)
+    y0 = cf["y_no_action"].to_numpy(dtype=float)
+    yr = cf["y_razorpay_default"].to_numpy(dtype=float)
+    n = int(mask.sum())
+    row = {
+        "abstained": n,
+        "abstention_share": float(mask.mean()),
+        "self_recovered": float(y0[mask].mean()) if n else float("nan"),
+        "razorpay_would_recover": float(yr[mask].mean()) if n else float("nan"),
+        "mean_amount_abstained": float(amount[mask].mean()) if n else float("nan"),
+        "foregone_per_1k": float(((yr - y0) * amount)[mask].sum() / len(df) * PER),
+    }
+    return pd.DataFrame([row])
+
+
+def ope_inputs(
+    settings: Settings, variant: SimVariant, estimate: str = POLICY_ESTIMATE, z: float = POLICY_Z
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, np.ndarray], pd.DataFrame]:
+    """Holdout logged rows, aligned counterfactuals, target actions per policy, reward model.
+
+    The reward model ``q_hat`` is the uplift ensemble's mean P(recover) per primitive action,
+    multiplied by amount (reward scale = rupees). Trained on the training split only.
+    """
+    df, cf = holdout_frame(settings, variant)
+    merchants = load_merchants(settings, variant)
+    model = TLearner.load(settings.variant_dir(variant) / "models" / "uplift.pkl")
+    run = run_ml_policy(df, model, merchants, estimate, z)
+    policies = all_policies(df, cf, run, merchants)
+    targets = {
+        "ml_policy": policies["ml_policy"],
+        "heuristic": policies["heuristic"],
+        "razorpay_default": np.full(len(df), "retry_delayed_1", dtype=object),  # alias (ADR-006)
+    }
+    mean, _ = model.predict_primitives(build_features(df))
+    names = [primitive_name(a, d) for a, d in PRIMITIVE_ACTIONS]
+    q_hat = pd.DataFrame(mean, columns=names)
+    return df, cf, targets, q_hat
 
 
 def oracle_actions(df: pd.DataFrame, cf: pd.DataFrame, run: PolicyRun) -> np.ndarray:

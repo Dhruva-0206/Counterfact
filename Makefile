@@ -14,8 +14,9 @@ data:             ## generate 50k failures for all three simulator variants (~30
 train:            ## fit uplift models per variant (~1-2 min)
 	$(PY) scripts/train.py --all-variants
 
-eval:             ## A/B + OPE, tables and figures into reports/ (~2 min)
+eval:             ## A/B + paired tables/figures, then OPE (~4 min)
 	$(PY) scripts/evaluate.py --all-variants
+	$(PY) scripts/ope.py --all-variants
 
 sensitivity:      ## regenerate world per assumption, retrain, recompute headline (~15 min)
 	$(PY) scripts/sensitivity.py
