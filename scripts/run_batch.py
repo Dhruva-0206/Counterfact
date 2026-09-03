@@ -103,13 +103,13 @@ def main() -> None:
     t0 = time.time()
     handled = []
     # process in two halves so the injection lands mid-batch and the loop visibly continues
-    if args.inject_failure and args.tokenized_events > 0:
-        # live: first tokenised event fails once at the transport layer then succeeds on backoff;
-        # second tokenised event exhausts the budget -> queued -> re-driven under the same key
+    if args.inject_failure and executor.name == "razorpay":
+        # live: the next provider write (payment link / createRecurring) fails once at the transport
+        # layer and succeeds on backoff; then a later one exhausts the budget -> queued -> re-driven
         injector.arm(1)
-        handled += agent.handle_batch(df.iloc[:1])
+        handled += agent.handle_batch(df.iloc[:inject_at])
         injector.arm(executor.max_api_retries)
-        handled += agent.handle_batch(df.iloc[1:])
+        handled += agent.handle_batch(df.iloc[inject_at:])
     elif args.inject_failure:
         handled += agent.handle_batch(df.iloc[:inject_at])
         injector.arm(executor.max_api_retries)  # enough 5xx to exhaust backoff -> queued
@@ -144,7 +144,17 @@ def main() -> None:
           f"queued mid-batch {len(queued_before)}  re-driven {len(redriven)}")
     print(f"  duplicate charges: {dup_charges}  (events charged more than once; must be 0)")
     if executor.name == "razorpay":
-        print("  live charges: verify with `python scripts/verify_charges.py --audit-dir <dir>` (payment.all on the token)")
+        modes = {}
+        for h in handled:
+            d = (h.row["executor_result"] or {}).get("detail") or {}
+            k = (d.get("mode") or "-", h.result.status)
+            modes[k] = modes.get(k, 0) + 1
+        print("  live paths (mode, status):", dict(sorted(modes.items())))
+        for h in handled:
+            d = (h.row["executor_result"] or {}).get("detail") or {}
+            if d.get("mode") == "payment_link" and h.result.status == "executed":
+                print(f"  payment link {d.get('plink_id')} {d.get('short_url')} for {h.row['event_id']} (reference {d.get('reference_id')})")
+        print(f"  verify: python scripts/verify_charges.py --audit-dir {audit_dir.relative_to(ROOT)}")
     transient = [e for e in executor.log if e['status'] == 'transient']
     if transient:
         print(f"  first transient error: {transient[0]}")

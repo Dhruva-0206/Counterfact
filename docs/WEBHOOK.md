@@ -7,8 +7,11 @@ Route: `POST /webhook/payment_failed` (`src/counterfact/api/main.py`). Secret va
 (local demos, `scripts/`) are accepted as our own event schema.
 
 Handled events: `payment.failed`, `subscription.pending`, `subscription.halted` (a failed
-charge). `payment.captured` and `subscription.charged` are acknowledged and ignored (`{"ignored":
-...}`) so that the dashboard subscription can tick them without creating decisions. The payload is
+charge) create a decision; `payment_link.paid` is a recovery confirmation: the link's
+`reference_id` is our idempotency key, so the outcome (`recovered`, amount, payment id, link id)
+is written to that decision's audit row. `payment.captured` and `subscription.charged` are
+acknowledged and ignored (`{"ignored": ...}`) so that the dashboard subscription can tick them
+without creating decisions. The payload is
 mapped to the agent's event schema by `razorpay_event_to_context`: ids, amount, method, timestamp
 and `error_reason` come from the webhook; the behavioural history features default to a first
 failure with no recent contacts because test mode does not carry them; the failure category maps

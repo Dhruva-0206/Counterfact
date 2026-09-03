@@ -69,6 +69,21 @@ def test_app_routes_and_metrics(agent_and_events, tmp_path: Path) -> None:
     assert agent.store.recent(limit=1)[0]["event_id"]
 
 
+def test_payment_link_paid_records_outcome(agent_and_events) -> None:
+    from counterfact.api.main import record_link_payment
+
+    agent, obs = agent_and_events
+    row = handle_event(agent, context_from_row(obs.iloc[3].to_dict()))
+    payload = {"entity": "event", "event": "payment_link.paid", "payload": {
+        "payment_link": {"entity": {"id": "plink_1", "reference_id": row["idempotency_key"], "amount": 29900, "amount_paid": 29900, "status": "paid"}},
+        "payment": {"entity": {"id": "pay_1", "amount": 29900, "status": "captured", "notes": {"idempotency_key": row["idempotency_key"]}}},
+    }}
+    out = record_link_payment(agent, payload)
+    assert out["outcome_recorded"] == row["event_id"] and out["recovered_amount"] == 299.0
+    assert agent.store.get(row["event_id"])["outcome"]["source"] == "payment_link.paid"
+    assert record_link_payment(agent, {"payload": {"payment_link": {"entity": {"reference_id": "nope"}}}})["ignored"] == "payment_link.paid"
+
+
 def test_webhook_signature_verification() -> None:
     import hashlib
     import hmac

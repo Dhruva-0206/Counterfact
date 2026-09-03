@@ -40,31 +40,35 @@ payment.failed ──► Agent.handle_batch ──► MLPolicy.decide (vectorise
               world / webhook ──► record_outcome ┘   redrive_queued() re-claims queued keys
 ```
 * **Executors.** `MockExecutor` (default; counts charges per event so tests can assert zero
-  duplicates; random or injected 5xx). `RazorpayExecutor` has two explicit modes (ADR-015):
-  1. **Tokenised recurring** (event carries `customer_id` + `token_id` from a registered card or
-     UPI mandate): the agent executes the charge itself: `order.create` with
-     `receipt = idempotency_key` and `payment_capture = 1`, then `payment.createRecurring` on the
-     token. Before charging, orders carrying the same receipt are checked for an existing payment,
-     so a re-drive after a lost response never charges twice. Later attempts of the arm's schedule
-     belong to the sequencer. Verified live on 2026-09-03 up to the charge call: orders are
-     created and idempotency, backoff and re-drive run against the real endpoint, but
+  duplicates; random or injected 5xx). `RazorpayExecutor` (test mode) has three execution paths
+  (ADR-015, ADR-018), all idempotent on the same ledger:
+  1. **Payment Link (live, executed).** `remind_and_retry` on a subscription event creates a
+     Razorpay Payment Link for the outstanding amount with `reference_id = idempotency_key`,
+     customer contact from the subscription's customer, SMS/email sent by Razorpay, 7-day expiry.
+     Before creating, `payment_link.all(reference_id)` is checked so a re-drive after a lost
+     response reuses the link. The ledger records `plink_id` and `short_url` as `executed`;
+     `payment_link.paid` on the webhook writes the recovery outcome to the audit row. Verified
+     live on 2026-09-03: links created on the real customer, one per key, including one whose
+     first attempt hit an injected transport fault and one queued after three faults and
+     re-driven; `scripts/verify_charges.py` confirms exactly one link per executed key.
+  2. **Subscriptions timing and escalation (deferred with Razorpay's schedule).** Razorpay's
+     Subscriptions product has no merchant-initiated retry (Razorpay retries `pending` itself;
+     `halted` is paid by the customer). Retry arms record the outstanding invoice, its pay link
+     and Razorpay's schedule (`invoice.all`) and are marked `deferred`; a paid-up subscription
+     yields `skipped`; escalation snapshots the subscription (`subscription.fetch`). Never shown
+     as executed.
+  3. **Tokenised `createRecurring` (implemented, blocked on account enablement).**
+     `order.create(receipt = idempotency_key)` then `payment.createRecurring` on a saved token,
+     with reuse of an existing payment on the same receipt. On this test account
      `POST /v1/payments/create/recurring` (and the S2S `/payments/create/json`) return
-     `BadRequestError: The requested URL was not found on the server` on this test account,
-     which is Razorpay's response when Recurring Payments / server-to-server payments are not
-     enabled for the account. Enablement is a dashboard/support step, not a code change;
-     `scripts/verify_charges.py` confirms via `order.payments` and `payment.all` that no key was
-     charged twice.
-  2. **Razorpay Subscriptions** (event carries a `subscription_id` only): Razorpay owns the
-     charge schedule and offers no merchant-initiated retry. The agent controls timing, outreach
-     and escalation: retry arms record the outstanding invoice, its pay link and Razorpay's
-     schedule (`invoice.all`) and are marked `deferred`; reminders use `invoice.notify_by` or
-     are `deferred` with Razorpay's exact refusal and the pay link; escalation snapshots the
-     subscription (`subscription.fetch`); no outstanding invoice -> `skipped` with the reason.
-  Nothing is reported as `executed` unless a provider call succeeded. Webhook HMAC via
-  `Utility.verify_webhook_signature`. Both executors share the ledger and backoff logic; the
-  Razorpay one runs with `COUNTERFACT_EXECUTOR=razorpay` and test keys in `.env` and refuses
-  non-test keys. `scripts/razorpay_setup.py`, `razorpay_token.py`, `verify_charges.py` and
-  `webhook_selftest.py` are the live tooling.
+     `BadRequestError: The requested URL was not found on the server` because Recurring Payments
+     is not enabled for the account; orders, idempotency, backoff and re-drive were verified live
+     up to that call, and `verify_charges.py` confirms zero payments on those keys.
+  The transport-level fault injector covers the payment-link and recurring call paths, so
+  backoff, queueing and re-drive are exercised on live endpoints. Webhook HMAC via
+  `Utility.verify_webhook_signature`. Runs with `COUNTERFACT_EXECUTOR=razorpay` and test keys in
+  `.env`; refuses non-test keys. Live tooling: `scripts/razorpay_setup.py`, `razorpay_token.py`,
+  `verify_charges.py`, `webhook_selftest.py`.
 * **Idempotency by construction.** The key is reserved in SQLite (`INSERT OR IGNORE`) before any
   provider call; a replayed webhook returns `duplicate` without a call; a queued key can only be
   re-driven through `claim_queued`, so an event can never be charged twice.

@@ -31,10 +31,31 @@ def main() -> None:
     c = razorpay.Client(auth=(s.razorpay_key_id, s.razorpay_key_secret))
     store = AuditStore(ROOT / args.audit_dir if not Path(args.audit_dir).is_absolute() else Path(args.audit_dir))
 
-    rows = [r for r in store.all_decisions() if (r.get("executor_result") or {}).get("detail", {}).get("mode") == "tokenized_recurring"
-            or (r.get("executor_result") or {}).get("status") == "queued"]
+    decisions = store.all_decisions()
+    links = [r for r in decisions if (r.get("executor_result") or {}).get("detail", {}).get("mode") == "payment_link"
+             or ((r.get("executor_result") or {}).get("status") == "queued" and r["action_name"] == "remind_and_retry")]
+    if links:
+        print("payment links per reference_id (= idempotency key): exactly one expected per executed reminder")
+        print(f"{'event_id':<14} {'status':<9} {'attempts':>8} {'links':>5} {'plink_id':<20} {'link_status':<10} ok")
+        link_problems = 0
+        for r in sorted(links, key=lambda r: r["event_id"]):
+            res = r["executor_result"]
+            resp = c.payment_link.all({"reference_id": r["idempotency_key"]})
+            found = list(resp.get("payment_links") or resp.get("items") or [])
+            expected = 1 if res["status"] == "executed" else 0
+            ok = len(found) == expected
+            link_problems += 0 if ok else 1
+            first = found[0] if found else {}
+            print(f"{r['event_id']:<14} {res['status']:<9} {res.get('attempts', 0):>8} {len(found):>5} {first.get('id', '-'):<20} {first.get('status', '-'):<10} {'yes' if ok else 'NO'}")
+        if link_problems:
+            sys.exit(f"DUPLICATE OR MISSING PAYMENT LINKS: {link_problems} mismatched rows")
+        print("zero duplicate links: every executed reminder has exactly one payment link; queued/failed keys have none\n")
+    rows = [r for r in decisions if (r.get("executor_result") or {}).get("detail", {}).get("mode") == "tokenized_recurring"
+            or ((r.get("executor_result") or {}).get("status") == "queued" and r["action_name"] != "remind_and_retry")]
     if not rows:
-        sys.exit("no tokenised decisions in this audit run")
+        if links:
+            return
+        sys.exit("no tokenised or payment-link decisions in this audit run")
     keys = {r["idempotency_key"] for r in rows}
     token_ids = {t for t in ((r["executor_result"].get("detail") or {}).get("request", {}).get("token") for r in rows) if isinstance(t, str) and t}
 

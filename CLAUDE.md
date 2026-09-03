@@ -13,7 +13,7 @@ Core loop: `failure context → predict uplift per action → choose max net EV 
 - [x] **One failure handled gracefully** (`make demo`: injected 5xx -> backoff -> queued -> batch continues -> re-driven under the same key; duplicate charges = 0, tested)
 - [x] Every money action **explainable, bounded, gated** (bounded plans, net-EV gate, guardrails, template/Claude explanations validated against the action set)
 - [x] **Honest metrics incl. false-positive cost** (wasted contacts, abstention, null-uplift world, sensitivity table, conservatism dial)
-- [x] Works on **Razorpay test-mode APIs** (live 2026-09-03: `subscription.fetch`, `invoice.all`, HMAC-verified webhook -> audit row; `notify_by`/`createRecurring` limits documented in ADR-015)
+- [x] Works on **Razorpay test-mode APIs** (live 2026-09-03: Payment Links executed one per key through an injected transport fault, `subscription.fetch`, `invoice.all`, `order.create`, HMAC-verified webhook -> audit row, `payment_link.paid` -> outcome; createRecurring blocked by account enablement, ADR-015/018)
 
 ## 3. Architecture
 
@@ -63,8 +63,8 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 
 ## 6. Current status
 **Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines. Checkpoint 2 confirmed. Phase 3 OPE (IPS/SNIPS/DM/DR; DR within A/B CI in 9/9 cells; `scripts/ope.py`, toy-case tests). Abstention self-recovery table. Phase 4: agent loop, idempotent executors (Mock + Razorpay test mode), JSONL+SQLite audit with execution ledger, failure injection + re-drive, Claude/template explanations with validator and cache, FastAPI surface, `make demo` (Checkpoint 4). Drifted variant (ADR-014): ML beats the rule table by 32% under merchant drift. Phase 5: Streamlit dashboard (`make dashboard`, headless test), `docs/DEMO_SCRIPT.md`, README with pitch line and limitations. Live verification (2026-09-03): 10/10 Claude explanations validated + cached; Razorpay test-mode plan/subscription created (`scripts/razorpay_setup.py`), live `subscription.fetch`/`invoice.all`, deferred retry semantics (ADR-015); signed-webhook self-test passes (`scripts/webhook_selftest.py`, `docs/WEBHOOK.md`).
-**In progress:** live verification: mode 1 (tokenised recurring) blocked by Razorpay account enablement of Recurring Payments (404 on /payments/create/recurring); step 3 webhook via ngrok waits on ngrok install.
-**Next:** once Recurring Payments is enabled: `COUNTERFACT_EXECUTOR=razorpay python scripts/run_batch.py --n 20 --tokenized-events 3 --inject-failure --max-amount 299 --subscription-id sub_TXXDsVmg4d3fkR` then `python scripts/verify_charges.py --audit-dir <dir>`; once ngrok is authenticated, finish docs/WEBHOOK.md step 3 and the pass/fail table.
+**In progress:** step 3 (ngrok tunnel + Razorpay dashboard webhook + live payment.failed and payment_link.paid round-trips), then tag v1.0.
+**Next:** on 'go': start ngrok (`$env:LOCALAPPDATA\Microsoft\WinGet\Links\ngrok.exe http 8000` if not on PATH), hand over the webhook URL + events, trigger the failing payment, show log + audit row, docs/JUDGE_QA.md, tag v1.0, push.
 **Known bugs:** none. Known limitation: A/B CIs are wide (heavy-tailed rupees); paired exact is the ground truth.
 **Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 

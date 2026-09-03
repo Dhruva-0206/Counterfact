@@ -148,6 +148,10 @@ class AuditStore:
         r = self._con.execute("SELECT * FROM decisions WHERE event_id = ?", (event_id,)).fetchone()
         return self._row_to_dict(r) if r else None
 
+    def find_by_key(self, idempotency_key: str) -> dict[str, Any] | None:
+        r = self._con.execute("SELECT * FROM decisions WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+        return self._row_to_dict(r) if r else None
+
     def recent(self, limit: int = 100, unexplained_only: bool = False) -> list[dict[str, Any]]:
         q = "SELECT * FROM decisions" + (" WHERE explanation IS NULL" if unexplained_only else "")
         q += " ORDER BY ts DESC LIMIT ?"

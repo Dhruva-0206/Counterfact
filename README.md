@@ -90,6 +90,11 @@ batch of 500 failures (calibrated) processed in 5.0s
   duplicate charges: 0  (events charged more than once; must be 0)
 ```
 
+Live (`COUNTERFACT_EXECUTOR=razorpay`): `python scripts/run_batch.py --n 20 --inject-failure --max-amount 299
+--subscription-id sub_TXXDsVmg4d3fkR` creates real Payment Links on the test customer, one per
+idempotency key, with the transport fault injected inside the live call path; then
+`python scripts/verify_charges.py --audit-dir <dir>` confirms one link per key on Razorpay's side.
+
 Every decision is one audit row (`event_id, idempotency_key, features_hash, uplift[5], net_ev[5],
 chosen_arm, guardrail_checks[], reason, executor_result, outcome, explanation`) in an append-only
 JSONL file with a SQLite mirror. The idempotency key is reserved in the ledger before any provider
@@ -159,15 +164,15 @@ test keys (`COUNTERFACT_EXECUTOR=razorpay`) and an Anthropic key (live explanati
   with hidden structure the models cannot see (`docs/EVALUATION.md`). We claim methodology and
   relative lift, not absolute rupees for any merchant.
 - **Razorpay test mode cannot emit failure reasons.** The taxonomy comes from the simulator.
-  The live executor has two explicit modes (ADR-015): *tokenised recurring*, where the agent
-  executes charges itself with order-receipt idempotency (`order.create` + `createRecurring`),
-  and *Razorpay Subscriptions*, where Razorpay owns the charge schedule and the agent controls
-  timing, outreach and escalation and records Razorpay's schedule. Verified live: signed
-  webhooks, `subscription.fetch`, `invoice.all`, `order.create`, backoff and re-drive on the real
-  call path, and zero duplicate charges via Razorpay's own records. The charge call itself
-  (`/payments/create/recurring`) returns 404 on our test account because Recurring Payments is
-  not enabled for it; that is an account setting, and deferred or failed rows are never shown as
-  executed.
+  The live executor has three paths (ADR-015, ADR-018): *Payment Link* (live, executed: the
+  reminder arm creates a Razorpay Payment Link with `reference_id = idempotency_key`, reused on
+  re-drive, and `payment_link.paid` records the recovery), *Subscriptions timing and escalation*
+  (Razorpay owns the charge schedule; retry arms are `deferred` with Razorpay's schedule and the
+  invoice pay link, never shown as executed), and *tokenised `createRecurring`* (implemented and
+  tested; on this test account `POST /v1/payments/create/recurring` returns 404 because Recurring
+  Payments is not enabled for the account). Verified live: signed webhooks, payment links one per
+  key through an injected transport fault, `subscription.fetch`, `invoice.all`, `order.create`,
+  and zero duplicates via Razorpay's own records (`scripts/verify_charges.py`).
 - **The rule table is oracle-informed.** It was written with the simulator's true per-category
   probabilities. The ML policy ties it under `calibrated` and beats it under `drifted`.
 - **A/B intervals are wide** (heavy-tailed B2B invoices); the paired-exact numbers are the

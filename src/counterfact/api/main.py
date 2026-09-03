@@ -60,6 +60,8 @@ def create_app(settings: Settings | None = None, agent: Agent | None = None) -> 
             raise HTTPException(status_code=400, detail="invalid JSON") from e
         if isinstance(payload.get("payload"), dict) and "entity" in payload:  # real Razorpay webhook
             event_name = str(payload.get("event", ""))
+            if event_name == "payment_link.paid":
+                return record_link_payment(get_agent(), payload)
             if event_name not in RAZORPAY_EVENTS_HANDLED:
                 return {"ignored": event_name}
             event = razorpay_event_to_context(payload)
@@ -195,6 +197,24 @@ def razorpay_event_to_context(payload: dict[str, Any]) -> dict[str, Any]:
         "token_id": pay.get("token_id"),
         "order_id": pay.get("order_id"),
     }
+
+
+def record_link_payment(agent: Agent, payload: dict[str, Any]) -> dict[str, Any]:
+    """``payment_link.paid``: the link's ``reference_id`` is our idempotency key -> recovery outcome."""
+    body = payload.get("payload", {})
+    link = (body.get("payment_link") or {}).get("entity") or {}
+    pay = (body.get("payment") or {}).get("entity") or {}
+    key = str(link.get("reference_id") or (pay.get("notes") or {}).get("idempotency_key") or "")
+    row = agent.store.find_by_key(key) if key else None
+    if row is None:
+        return {"ignored": "payment_link.paid", "reason": "no decision with this reference_id", "reference_id": key}
+    amount = float(pay.get("amount") or link.get("amount_paid") or link.get("amount") or 0) / 100.0
+    agent.store.set_outcome(row["event_id"], {
+        "recovered": True, "recovered_amount": amount, "source": "payment_link.paid",
+        "payment_id": pay.get("id"), "plink_id": link.get("id"), "reference_id": key,
+    })
+    return {"outcome_recorded": row["event_id"], "reference_id": key, "recovered_amount": amount,
+            "payment_id": pay.get("id"), "plink_id": link.get("id")}
 
 
 def handle_event(agent: Agent, ctx) -> dict[str, Any]:

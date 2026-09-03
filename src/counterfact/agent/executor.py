@@ -226,10 +226,15 @@ class RazorpayExecutor(BaseExecutor):
     **Mode 2, Razorpay Subscriptions** (event carries a ``subscription_id`` only): Razorpay owns
     the charge schedule and offers no merchant-initiated retry. The agent controls timing,
     outreach and escalation: retry arms record the outstanding invoice, its pay link and
-    Razorpay's schedule (``invoice.all``) and are marked ``deferred``; reminders use
-    ``invoice.notify_by`` or are ``deferred`` with Razorpay's exact refusal and the pay link;
-    escalation snapshots the subscription (``subscription.fetch``). Nothing is reported as
-    executed unless a provider call succeeded.
+    Razorpay's schedule (``invoice.all``) and are marked ``deferred``; escalation snapshots the
+    subscription (``subscription.fetch``).
+
+    **Mode 3, Payment Link** (the live executed path on every account): ``remind_and_retry`` on a
+    subscription event creates a Razorpay Payment Link for the outstanding amount with
+    ``reference_id = idempotency_key`` (an existing link with that reference is reused on
+    re-drive), customer contact from the subscription's customer, SMS/email notification by
+    Razorpay, 7-day expiry. ``payment_link.paid`` on the webhook records the recovery. Nothing is
+    reported as executed unless a provider call succeeded.
 
     Webhook HMAC via ``Utility.verify_webhook_signature``. ``live_injector`` makes the next
     ``createRecurring`` call fail at the transport layer so backoff and re-drive run against the
@@ -266,7 +271,7 @@ class RazorpayExecutor(BaseExecutor):
         real_post = session.post
 
         def post(url, *args, **kwargs):
-            if "/payments/create/recurring" in str(url) and injector.consume():
+            if ("/payments/create/recurring" in str(url) or "/payment_links" in str(url)) and injector.consume():
                 import requests
 
                 raise requests.exceptions.ConnectionError("injected transport fault: connection reset by peer")
@@ -367,6 +372,8 @@ class RazorpayExecutor(BaseExecutor):
             return self._charge_token(req, notes, schedule)
 
         invoice = self._outstanding_invoice(req.subscription_id)
+        if invoice is None and req.arm == REMIND_AND_RETRY:
+            return self._payment_link(req, notes, schedule, None)
         if invoice is None:
             snap = self._wrap(self.client.subscription.fetch, req.subscription_id,
                               request={"call": "subscription.fetch", "subscription_id": req.subscription_id})
@@ -376,10 +383,12 @@ class RazorpayExecutor(BaseExecutor):
                         "reason": "no outstanding invoice to re-present (subscription not authenticated or fully paid)",
                         "idempotency_key": req.idempotency_key, "schedule_days": schedule},
             )
-        pay_link = invoice.get("short_url")
         base_detail = {
-            "mode": "razorpay_subscriptions", "call": "invoice.all", "invoice_id": invoice["id"], "invoice_status": invoice.get("status"),
-            "amount_due_paise": invoice.get("amount_due"), "pay_link": pay_link,
+            "mode": "razorpay_subscriptions", "call": "invoice.all",
+            "invoice_id": invoice["id"] if invoice else None,
+            "invoice_status": invoice.get("status") if invoice else None,
+            "amount_due_paise": invoice.get("amount_due") if invoice else None,
+            "pay_link": invoice.get("short_url") if invoice else None,
             "subscription_id": req.subscription_id, "schedule_days": schedule,
             "idempotency_key": req.idempotency_key,
             "note": ("Razorpay Subscriptions has no merchant-initiated retry: Razorpay retries a pending "
@@ -389,22 +398,75 @@ class RazorpayExecutor(BaseExecutor):
             # retry arms on the Subscriptions product: the retry itself is Razorpay's; we record the
             # outstanding invoice and its pay link so the schedule is auditable, and mark it deferred.
             return ExecutorResult(status="deferred", attempts=0, provider_ref=str(invoice["id"]), detail=base_detail)
-        summary = {"call": "invoice.notify_by", "invoice_id": invoice["id"], "medium": self.reminder_medium,
-                   "subscription_id": req.subscription_id, "notes": notes}
+        return self._payment_link(req, notes, schedule, invoice)
+
+    # ---- mode 3: Payment Link (works on every account) --------------------------------------------
+    @staticmethod
+    def _links(resp: dict[str, Any]) -> list[dict[str, Any]]:
+        return list(resp.get("payment_links") or resp.get("items") or [])
+
+    def _customer_contact(self, req: ExecutionRequest) -> dict[str, Any]:
+        """Customer block for the link: from the subscription's customer, else the event payload."""
+        p = req.payload
+        cust: dict[str, Any] = {}
         try:
-            resp = self._wrap(self.client.invoice.notify_by, invoice["id"], self.reminder_medium, request=summary)
-        except PermanentError as e:
-            # Razorpay refuses notifications on subscription-generated invoices without a customer
-            # contact ("Operation not allowed for Invoice in issued status"). Record the exact error and
-            # the pay link so the merchant sends the reminder through its own channel; never a silent no-op.
-            return ExecutorResult(status="deferred", attempts=0, provider_ref=str(invoice["id"]),
-                                  error=str(e), detail={**base_detail, "request": summary,
-                                                        "message_send_at": req.message_send_at,
-                                                        "reminder": "send pay_link via merchant channel"})
+            sub = self._wrap(self.client.subscription.fetch, req.subscription_id,
+                             request={"call": "subscription.fetch", "subscription_id": req.subscription_id})
+            if sub.get("customer_id"):
+                c = self._wrap(self.client.customer.fetch, sub["customer_id"],
+                               request={"call": "customer.fetch", "customer_id": sub["customer_id"]})
+                cust = {k: c.get(k) for k in ("name", "contact", "email") if c.get(k)}
+                cust["customer_id"] = sub["customer_id"]
+        except PermanentError:
+            cust = {}
+        cust.setdefault("name", p.get("name") or "Subscriber")
+        if p.get("contact"):
+            cust.setdefault("contact", p["contact"])
+        if p.get("email"):
+            cust.setdefault("email", p["email"])
+        return cust
+
+    def _payment_link(self, req: ExecutionRequest, notes: dict[str, Any], schedule: list[float],
+                      invoice: dict[str, Any] | None) -> ExecutorResult:
+        """Reminder as a Razorpay Payment Link, idempotent on ``reference_id = idempotency_key``."""
+        key = req.idempotency_key
+        existing = self._links(self._wrap(self.client.payment_link.all, {"reference_id": key},
+                                          request={"call": "payment_link.all", "reference_id": key}))
+        if existing:
+            link = existing[0]
+            return ExecutorResult(
+                status="executed", attempts=0, provider_ref=str(link["id"]),
+                detail={"mode": "payment_link", "call": "payment_link.all", "reused": True, "plink_id": link["id"],
+                        "short_url": link.get("short_url"), "link_status": link.get("status"),
+                        "reference_id": key, "schedule_days": schedule,
+                        "note": "a payment link already existed for this idempotency key; no new link created"},
+            )
+        amount_paise = int(invoice["amount_due"]) if invoice and invoice.get("amount_due") else int(round(req.amount * 100))
+        what = f"invoice {invoice['id']}" if invoice else f"subscription {req.subscription_id}"
+        customer = self._customer_contact(req)
+        customer_id = customer.pop("customer_id", None)
+        body = {
+            "amount": amount_paise,
+            "currency": "INR",
+            "accept_partial": False,
+            "reference_id": key,
+            "description": f"Payment due for {what} (Counterfact reminder)",
+            "customer": customer,
+            "notify": {"sms": bool(customer.get("contact")), "email": bool(customer.get("email"))},
+            "reminder_enable": True,
+            "expire_by": int(time.time()) + 7 * 24 * 3600,
+            "notes": {**notes, "subscription_id": req.subscription_id, "customer_id": customer_id or ""},
+        }
+        summary = {"mode": "payment_link", "call": "payment_link.create",
+                   **{k: v for k, v in body.items() if k != "customer"},
+                   "customer": {k: (v if k == "name" else "present") for k, v in customer.items()}}
+        link = self._wrap(self.client.payment_link.create, body, request=summary)
         return ExecutorResult(
-            status="executed", attempts=0, provider_ref=str(invoice["id"]),
-            detail={"request": summary, "response": resp, "schedule_days": schedule, "pay_link": pay_link,
-                    "message_send_at": req.message_send_at},
+            status="executed", attempts=0, provider_ref=str(link["id"]),
+            detail={"mode": "payment_link", "request": summary, "plink_id": link["id"], "short_url": link.get("short_url"),
+                    "link_status": link.get("status"), "reference_id": key, "expire_by": body["expire_by"],
+                    "message_send_at": req.message_send_at, "schedule_days": schedule,
+                    "note": "Razorpay sends the SMS/email; payment_link.paid on the webhook records the recovery"},
         )
 
 
