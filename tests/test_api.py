@@ -93,3 +93,22 @@ def test_webhook_signature_verification() -> None:
     sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     assert verify_webhook(body, sig, secret) is True
     assert verify_webhook(body, "deadbeef", secret) is False
+
+
+def test_build_agent_honours_api_audit_dir(tmp_path: Path, monkeypatch) -> None:
+    """A link paid from a batch run reconciles only if the server reads that run's store."""
+    import counterfact.api.main as api_main
+
+    monkeypatch.setattr(api_main.TLearner, "load", staticmethod(lambda p: object()))
+    monkeypatch.setattr(api_main, "load_merchants", lambda *a, **k: {})
+    monkeypatch.setattr(api_main, "build_executor", lambda s, store, **k: MockExecutor(store))
+
+    target = tmp_path / "runA"
+    s = Settings(api_audit_dir=target, reports_dir=tmp_path / "reports")
+    assert api_main.build_agent(s).store.dir == target
+
+    override = tmp_path / "runB"
+    assert api_main.build_agent(s, audit_dir=override).store.dir == override
+
+    plain = Settings(reports_dir=tmp_path / "reports")
+    assert api_main.build_agent(plain).store.dir == tmp_path / "reports" / "audit" / "api"

@@ -31,7 +31,9 @@ def build_agent(settings: Settings, audit_dir: Path | None = None) -> Agent:
     variant = settings.sim_variant
     model = TLearner.load(settings.variant_dir(variant) / "models" / "uplift.pkl")
     merchants = load_merchants(settings, variant)
-    store = AuditStore(audit_dir or settings.reports_dir / "audit" / "api")
+    store = AuditStore(
+        audit_dir or settings.api_audit_dir or settings.reports_dir / "audit" / "api"
+    )
     injector = FailureInjector(flag_path=INJECT_FLAG)
     executor = build_executor(settings, store, injector=injector)
     return Agent(model, merchants, executor, store)

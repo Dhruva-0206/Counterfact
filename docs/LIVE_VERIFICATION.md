@@ -17,13 +17,38 @@ strength of a log line alone: the Razorpay-side checks read Razorpay's own recor
 | 8 | Webhook rejects a tampered signature | **pass** | HTTP 401, `invalid webhook signature` | `python scripts/webhook_selftest.py` |
 | 9 | Webhook accepts a signed body and writes an audit row | **pass** | HTTP 200 + decision + executor result | same as row 8 |
 | 10 | The same over the public tunnel | **pass** | 401 then 200 through `*.trycloudflare.com`, `/health` returns `executor: razorpay` | `python scripts/webhook_selftest.py --url https://<host>/webhook/payment_failed` |
-| 11 | Test suite and linter | **pass** | 87 tests pass, ruff clean | `uv run pytest` and `uv run ruff check .` |
+| 11 | Test suite and linter | **pass** | 89 tests pass, ruff clean | `uv run pytest` and `uv run ruff check .` |
 | 12 | Tokenised `createRecurring` charge | **blocked, account** | `BadRequestError: The requested URL was not found on the server` on `POST /v1/payments/create/recurring`; Recurring Payments is not enabled on this test account (ADR-015) | `python scripts/run_batch.py --tokenized-events 3 --audit-dir reports/audit/live_tokenized_probe` |
-| 13 | A webhook delivered by Razorpay itself | **pending, needs dashboard** | route, signature check and audit write already proven by rows 8-10; only Razorpay's delivery is untested | create the Test Mode webhook, then pay with card `4100 2800 0008 0001` |
-| 14 | `payment_link.paid` recorded as a recovery outcome | **pending, needs a test payment** | implemented and unit-tested; `reference_id` maps back to the decision | pay one link from row 3 with a test card |
+| 13 | A webhook delivered by Razorpay itself | **pass** | a declined test card produced a real `payment.failed` from `52.66.75.174`, signature verified, decision `pay_TXdaPP1zgfLu5s` created, `remind_and_retry` at net EV Rs 238 | pay a link with card `4100 2800 0008 0001` |
+| 14 | `payment_link.paid` recorded as a recovery outcome | **pass** | the link the agent itself created (`plink_TXdaY2xSCkHX52`) was paid; outcome `recovered: true, Rs 299, pay_TXdfIi8h3iUojt` written to decision `pay_TXdaPP1zgfLu5s` | pay an agent-created link with card `4111 1111 1111 1111` |
 
-Rows 13 and 14 are the only two that need a human in the Razorpay dashboard. Rows 1-12 run
-unattended.
+Rows 13 and 14 needed a human in the Razorpay dashboard and were completed on 2026-09-03.
+Rows 1-12 run unattended. Row 12 is the only one not passing, and it is blocked by Razorpay
+account enablement rather than by anything in this repository.
+
+## The closed loop, end to end on live infrastructure
+One unbroken chain, all of it on Razorpay test mode, none of it simulated:
+
+1. A card was declined on a Payment Link. Razorpay delivered a signed `payment.failed` to the
+   public tunnel; the signature verified.
+2. The agent scored the five arms and chose `remind_and_retry` at a net expected value of Rs 238
+   against a 13% chance of recovering with no action at all, and wrote decision
+   `pay_TXdaPP1zgfLu5s`.
+3. The executor created a real Payment Link, `plink_TXdaY2xSCkHX52`, keyed by the decision's
+   idempotency key.
+4. That link was paid. Razorpay delivered `payment_link.paid`, which mapped `reference_id` back to
+   the decision and recorded `recovered: true, Rs 299.00, pay_TXdfIi8h3iUojt`.
+
+Steps 2 and 3 are the product. Steps 1 and 4 are Razorpay telling us, unprompted, that it worked.
+
+### One honest note on step 4
+The first paid link in this session recorded nothing, and correctly so. That link came from an
+earlier batch whose decisions live in `reports/audit/live_demo`, while the server reads
+`reports/audit/api`; with no matching idempotency key the handler answered
+`{"ignored": "payment_link.paid", "reason": "no decision with this reference_id"}`. The mapping
+logic was never wrong, it was pointed at a different ledger. The server's audit store is now
+selectable with `COUNTERFACT_API_AUDIT_DIR` (tested), and `docs/WEBHOOK.md` states the rule: to
+reconcile links made by a batch, the server must read that batch's store.
 
 ## What "blocked" means in row 12
 Razorpay's Recurring Payments product is not enabled on this test account, so the merchant-initiated

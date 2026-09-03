@@ -146,6 +146,7 @@ class Settings(BaseModel):
     anthropic_api_key: str | None = None
     data_dir: Path = DATA_DIR
     reports_dir: Path = REPORTS_DIR
+    api_audit_dir: Path | None = None
 
     def variant_dir(self, variant: SimVariant | None = None) -> Path:
         """Directory holding generated data for a simulator variant."""
@@ -173,4 +174,5 @@ def get_settings(env_file: Path | None = ROOT / ".env") -> Settings:
     pick("ANTHROPIC_API_KEY", "anthropic_api_key")
     pick("COUNTERFACT_DATA_DIR", "data_dir")
     pick("COUNTERFACT_REPORTS_DIR", "reports_dir")
+    pick("COUNTERFACT_API_AUDIT_DIR", "api_audit_dir")
     return Settings(**kw)  # type: ignore[arg-type]

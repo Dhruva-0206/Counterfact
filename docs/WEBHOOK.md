@@ -51,7 +51,14 @@ from `error_reason` (unknown reasons fall back to `bank_technical`).
    `short_url`) and pay with the failure card `4100 2800 0008 0001` (any future expiry, any CVV).
    Razorpay emits `payment.failed`; the uvicorn log shows the signed request, the signature check,
    and the audit row (`GET /decisions?limit=1`).
-6. Local self-check with no tunnel at all: `python scripts/webhook_selftest.py` signs a
+6. Reconciling `payment_link.paid`: a link is matched back to its decision by idempotency key,
+   which means the server must read the **same audit store as the run that created the link**. The
+   server defaults to `reports/audit/api`; point it at a batch's store with
+   `COUNTERFACT_API_AUDIT_DIR=reports/audit/<run>`. If they differ, the handler answers
+   `{"ignored": "payment_link.paid", "reason": "no decision with this reference_id"}` and records
+   nothing, which is correct behaviour, not a failure. Links created by the server itself (an
+   executed `remind_and_retry` on a webhook event) always reconcile.
+7. Local self-check with no tunnel at all: `python scripts/webhook_selftest.py` signs a
    Razorpay-shaped `payment.failed` body with the `.env` secret, POSTs it to `localhost:8000`, and
    shows the audit row; it also confirms that a tampered signature is rejected with 401.
 
