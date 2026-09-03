@@ -1,5 +1,9 @@
-# env / secrets
+# secrets
 .env
+.env.*
+!.env.example
+
+# environments / caches
 .venv/
 __pycache__/
 *.pyc
@@ -9,12 +13,19 @@ __pycache__/
 dist/
 build/
 
-# generated data and reports (final figures are kept)
+# generated data, models, audit logs, reports (final figures are kept)
 data/
 reports/*
 !reports/figures/
 !reports/figures/**
 !reports/.gitkeep
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+*.jsonl
+*.pkl
+*.joblib
 
 # editor
 .vscode/
