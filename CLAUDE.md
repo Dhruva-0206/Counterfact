@@ -57,10 +57,11 @@ Everything is seeded (`RECOVERAI_SEED`, default 42) and regenerable from scratch
 - One decision per failed payment; each arm is a bounded plan executed over a 14-day window.
 
 ## 6. Current status
-**Done:** Phase 0 scaffold (layout, pinned deps, Makefile + make.ps1, docs skeletons).
-**In progress:** Phase 1 simulator + baselines.
-**Next:** Checkpoint 1 table (baselines × variants).
-**Known bugs:** none yet.
+**Done:** Phase 0 scaffold. Phase 1: seeded generator (5 merchants, 8k customers, 50k failures), true outcome process with three variants and common random numbers, calibrated so Razorpay default recovers ~60%, epsilon-uniform logging policy with propensities, baselines (`no_action`, `razorpay_default`, `heuristic`), counterfactual-leak test, Checkpoint 1 table (`scripts/checkpoint1.py`).
+**In progress:** awaiting Checkpoint 1 confirmation.
+**Next:** Phase 2 features + T-learner + net-EV policy + guardrails + A/B (Checkpoint 2).
+**Known bugs:** none.
+**Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 
 ## 7. Conventions
 - Python 3.11, type hints, `ruff` clean, docstrings on public functions.
