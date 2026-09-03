@@ -59,6 +59,28 @@ IPS drifts by up to 13% where the target policy rarely matches the logged action
 ![A/B, calibrated](reports/figures/ab_calibrated.png)
 ![conservatism dial](reports/figures/z_dial.png)
 
+## Phase 4: the agent, end to end (`make demo`)
+`python scripts/run_batch.py --n 500 --inject-failure` processes 500 held-out failures through
+decide -> guardrails -> idempotent executor -> audit, with a provider 5xx injected mid-batch:
+
+```
+batch of 500 failures (calibrated) processed in 5.0s
+  recovered: 307/500 = 61.4%   Rs recovered 1,824,718 of Rs 2,755,429 at risk
+  contacts 61  escalations 129  abstentions 49  guardrail overrides 45
+  executor ledger {'executed': 451, 'skipped': 49}  injected 5xx fired 3  queued mid-batch 1  re-driven 1
+  duplicate charges: 0  (events charged more than once; must be 0)
+```
+
+Every decision is one audit row (`event_id, idempotency_key, features_hash, uplift[5], net_ev[5],
+chosen_arm, guardrail_checks[], reason, executor_result, outcome, explanation`) in an append-only
+JSONL file with a SQLite mirror. The idempotency key is reserved in the ledger before any provider
+call, so a replayed webhook or a re-driven queued action can never charge twice (tested). Claude
+(`claude-haiku-4-5`) drafts two-sentence explanations lazily (`--explain N`, capped at 50 per run,
+cached); a validator rejects any text naming an arm outside the action set and falls back to a
+deterministic template. `RazorpayExecutor` maps the arms to test-mode endpoints
+(`payment.createRecurring`, `invoice.notify_by`, `subscription.fetch`, webhook HMAC); see
+`docs/ARCHITECTURE.md` for the limitation that test mode cannot emit the failure taxonomy.
+
 ## Phase 1 results: baselines under three simulator variants
 Per 1,000 failed payments, seed 42, 50,000 failures. `razorpay_default` is Razorpay's automatic
 retry schedule after a failed subscription charge; under the equalized attempt budget (ADR-006)

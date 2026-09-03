@@ -9,11 +9,11 @@ Core loop: `failure context → predict uplift per action → choose max net EV 
 
 ## 2. Judging bars (tick when demoable)
 - [x] Measured money recovered **across a batch** (`make eval`: 20k-failure holdout, A/B + paired exact, per merchant)
-- [ ] Compliant escalation, **stopping rules**, **audit trail**
-- [ ] **One failure handled gracefully** (API 5xx mid-retry → no double charge, backoff, logged, batch continues)
-- [ ] Every money action **explainable, bounded, gated**
+- [x] Compliant escalation, **stopping rules**, **audit trail** (guardrails with reason codes, retry budget, contact caps, quiet hours; JSONL + SQLite audit)
+- [x] **One failure handled gracefully** (`make demo`: injected 5xx -> backoff -> queued -> batch continues -> re-driven under the same key; duplicate charges = 0, tested)
+- [x] Every money action **explainable, bounded, gated** (bounded plans, net-EV gate, guardrails, template/Claude explanations validated against the action set)
 - [x] **Honest metrics incl. false-positive cost** (wasted contacts, abstention, null-uplift world, sensitivity table, conservatism dial)
-- [ ] Works on **Razorpay test-mode APIs**
+- [~] Works on **Razorpay test-mode APIs** (`RazorpayExecutor` maps arms to `payment.createRecurring`, `invoice.notify_by`, `subscription.fetch`, webhook HMAC; exercised against a fake client in tests; live run needs test keys in `.env`)
 
 ## 3. Architecture
 
@@ -61,9 +61,9 @@ Everything is seeded (`COUNTERFACT_SEED`, default 42) and regenerable from scrat
 - Every simulator assumption that moves the headline is a sensitivity knob (`OutcomeModel(overrides=...)`) with a row in `docs/EVALUATION.md`.
 
 ## 6. Current status
-**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines. Checkpoint 2 confirmed. Phase 3 OPE (IPS/SNIPS/DM/DR; DR within A/B CI in 9/9 cells; `scripts/ope.py`, toy-case tests). Abstention self-recovery table.
-**In progress:** Phase 4 (agent loop, executor with idempotency, audit, injected 5xx, LLM explanations).
-**Next:** drifted variant (60 min), then Phase 5 dashboard + docs.
+**Done:** Phase 0 scaffold; renamed to Counterfact, pushed to GitHub (origin = Dhruva-0206/Counterfact). Phase 1 simulator + baselines (Checkpoint 1 confirmed). ADR-006 equalized attempt budget. Phase 2: decision-time features with static + dynamic leak tests, IPS-weighted T-learner (10-member bootstrap ensemble), net-EV policy with confidence gate (gated z=2), guardrails with machine-readable reasons (every rule tested), two-arm A/B + paired-exact evaluator, per-merchant tables, conservatism dial (`make dial`), sensitivity harness (`make sensitivity`). ADR-013 escalation semantics + guardrailed baselines. Checkpoint 2 confirmed. Phase 3 OPE (IPS/SNIPS/DM/DR; DR within A/B CI in 9/9 cells; `scripts/ope.py`, toy-case tests). Abstention self-recovery table. Phase 4: agent loop, idempotent executors (Mock + Razorpay test mode), JSONL+SQLite audit with execution ledger, failure injection + re-drive, Claude/template explanations with validator and cache, FastAPI surface, `make demo` (Checkpoint 4).
+**In progress:** drifted variant (merchant-specific taxonomy drift, 60 min timebox).
+**Next:** Phase 5 dashboard + docs + demo script.
 **Known bugs:** none. Known limitation: A/B CIs are wide (heavy-tailed rupees); paired exact is the ground truth.
 **Environment note:** the Bash tool truncates commands above roughly 8 KB; write large files with the Write tool.
 

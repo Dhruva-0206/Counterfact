@@ -21,5 +21,48 @@ Filled progressively; component contracts are the docstrings of the named module
 | `eval/pipeline.py` | train (logged data only) and evaluate (counterfactual truth) one variant end to end; shared by `scripts/train.py`, `evaluate.py`, `sensitivity.py`, `z_dial.py` |
 | `api/main.py` | FastAPI: `/webhook/payment_failed`, `/decisions`, `/metrics` |
 
+## Agent runtime (Phase 4)
+```
+payment.failed ──► Agent.handle_batch ──► MLPolicy.decide (vectorised, gated z=2)
+                        │                      │
+                        │                      ▼
+                        │              apply_guardrails (per row, reason codes)
+                        │                      │
+                        │                      ▼
+                        │   idempotency_key = sha256(event_id | action | features_hash)
+                        │                      │
+                        │                      ▼
+                        │   Executor.execute: ledger.reserve(key) ─► duplicate? return, no call
+                        │                      │ provider call, 5xx -> backoff x3 -> queued
+                        │                      ▼
+                        └──────────► AuditStore.append_decision (JSONL + SQLite)
+                                               │
+              world / webhook ──► record_outcome ┘   redrive_queued() re-claims queued keys
+```
+* **Executors.** `MockExecutor` (default; counts charges per event so tests can assert zero
+  duplicates; random or injected 5xx). `RazorpayExecutor` (test mode): retry arms ->
+  `payment.createRecurring` (charge the saved mandate/token again), reminder ->
+  `invoice.notify_by(invoice_id, "sms")`, escalation -> `subscription.fetch` snapshot for the ops
+  ticket; webhook HMAC via `Utility.verify_webhook_signature`. Both executors share the same
+  ledger and backoff logic; the Razorpay one is exercised against a fake client in tests and
+  runs live with `COUNTERFACT_EXECUTOR=razorpay` plus test keys in `.env`.
+* **Idempotency by construction.** The key is reserved in SQLite (`INSERT OR IGNORE`) before any
+  provider call; a replayed webhook returns `duplicate` without a call; a queued key can only be
+  re-driven through `claim_queued`, so an event can never be charged twice.
+* **Graceful failure.** `scripts/inject_failure.py` (or `--inject-failure`) forces 5xx on the
+  next provider calls: the executor backs off (0.05 s, 0.1 s, 0.2 s), parks the action as
+  `queued`, the loop continues with the next event, and `redrive_queued` executes it later.
+* **Audit row.** `event_id, idempotency_key, features_hash, uplift[5], net_ev[5], chosen_arm,
+  proposed_arm, guardrail_checks[], rejection_codes, reason, executor_result, outcome,
+  explanation`. JSONL is the append-only source of truth; SQLite is the queryable mirror.
+* **Explanations.** `agent/explain.py`: Claude (`claude-haiku-4-5`) drafts two sentences from
+  the audit row; a validator rejects text that names another arm or an out-of-set action
+  (discounts, refunds, cancellations); rejected or failed calls fall back to a deterministic
+  template; at most `MAX_EXPLANATIONS_PER_RUN = 50` calls per process; results are cached in the
+  audit store and generated lazily (`--explain N`, `POST /decisions/{id}/explain`).
+* **API.** `api/main.py`: `POST /webhook/payment_failed` (signature-verified when a Razorpay
+  signature header is present), `GET /decisions`, `GET /decisions/{event_id}`,
+  `POST /decisions/{event_id}/explain`, `GET /metrics`, `GET /health`.
+
 ## Known limitation: test mode cannot emit failure reasons
 Razorpay test mode does not let us provoke specific decline codes (insufficient funds, expired card, risk decline). The failure taxonomy therefore comes from the simulator; retries, subscription reads and webhook verification run against real test-mode endpoints. We claim methodology and relative lift on calibrated synthetic data, not absolute rupees.
