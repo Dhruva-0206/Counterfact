@@ -1,22 +1,62 @@
 # Counterfact
 
-Net-expected-value recovery of failed subscription payments for Razorpay merchants.
-**"Do nothing" is a first-class action with its own expected value.**
+**Recovers failed subscription payments by deciding, for each one, whether any intervention is
+worth more than doing nothing. Then it executes that choice on Razorpay under hard guardrails and
+proves the rupees with a randomised A/B.**
 
-Razorpay AI Buildathon 2026, AI Revenue Recovery track.
+Razorpay AI Buildathon 2026 · Track 03, AI Revenue Recovery · demo flow in `docs/DEMO_SCRIPT.md`
 
-> Every number in this README is regenerated from seed 42 by `make data && make train && make eval`
-> (plus `make dial`, `make sensitivity`, `make demo`). Dashboard: `make dashboard`. Demo flow:
-> `docs/DEMO_SCRIPT.md`. Decisions: `docs/DECISIONS.md`. Methodology: `docs/EVALUATION.md`.
+"Do nothing" is a first-class action with its own expected value. Every intervention is priced
+against the counterfactual, so the system reports both the money it recovered and the money it
+wasted contacting customers who would have paid anyway.
 
-**Matches a rule table written with perfect knowledge of the failure taxonomy, using 63-83% fewer
-reminders, abstains correctly when nothing works, and beats it when merchants diverge from the
-taxonomy.** Every clause is a regenerable number: calibrated Rs 576k vs Rs 594k per 1,000
-failures (-3%) at 127 vs 342 reminders; misspecified Rs 559k vs Rs 641k at 58 vs 342; null_uplift
-80.9% abstention, 4 reminders and Rs -202 per 1k vs the rule table's 342 and Rs -10,399; drifted
-Rs 818k vs Rs 617k (+32%, A/B CI excludes zero). Clause-by-clause table in `docs/EVALUATION.md`.
+## The track bar, line by line
 
-## Phase 2 results: ML policy vs Razorpay default (20k-failure holdout per variant)
+> "Don't just identify the problem. Show measured money recovered across a batch, with compliant
+> escalation, stopping rules, and an audit trail."
+
+| The bar asks for | Where it is |
+|---|---|
+| measured money recovered across a batch | 20,000-failure holdout per variant, randomised A/B with bootstrap intervals, paired-exact ground truth printed beside every estimate |
+| compliant escalation | `escalate_human` arm, quiet hours, mandatory-escalation rule for dead mandates and expired cards |
+| stopping rules | three-retry budget, contact caps, minimum-EV gate, and 81% abstention in a world where nothing works |
+| audit trail | append-only JSONL with a SQLite mirror, one row per decision carrying uplift, net EV, guardrail codes, executor result and outcome |
+| don't just identify | executes on live Razorpay: one payment link per idempotency key, zero duplicates verified against Razorpay's own records |
+
+## Proven on live Razorpay test mode
+One unbroken chain, none of it simulated. Row-by-row evidence in `docs/LIVE_VERIFICATION.md`.
+
+1. A declined card produced a signed `payment.failed` from Razorpay. The signature verified.
+2. The agent scored all five arms and chose `remind_and_retry` at a net expected value of Rs 238,
+   against a 13% chance of that payment recovering with no action at all.
+3. The executor created a real Payment Link, keyed by the decision's idempotency key.
+4. That link was paid. `payment_link.paid` mapped back through the key and wrote
+   `recovered: true, Rs 299.00` onto the very decision that caused it.
+
+Steps 2 and 3 are the product. Steps 1 and 4 are Razorpay confirming it, unprompted. Thirteen of
+fourteen verification rows pass. The one that does not is blocked by a Razorpay account setting
+rather than by anything in this repository, and it is documented rather than quietly dropped.
+
+## If you only have three minutes
+1. This page, down to the results table.
+2. `docs/LIVE_VERIFICATION.md` for what actually ran against the live API, with the command that
+   regenerates each row.
+3. `docs/EVALUATION.md` for how the money is measured, including the null-uplift world where no
+   intervention has any causal effect and the correct answer is to abstain.
+
+> Every number in this README regenerates from seed 42 with `make data && make train && make eval`,
+> plus `make dial`, `make sensitivity` and `make demo`. Nothing is quoted here that a script cannot
+> reproduce.
+
+**Headline result.** Counterfact matches a rule table written with perfect knowledge of the failure
+taxonomy, using 63-83% fewer reminders, abstains correctly when nothing works, and beats that rule
+table when merchants drift away from the taxonomy. Every clause is a regenerable number: calibrated
+Rs 576k vs Rs 594k per 1,000 failures (-3%) at 127 reminders against 342; misspecified Rs 559k vs
+Rs 641k at 58 against 342; `null_uplift` 80.9% abstention, 4 reminders and Rs -202 per 1k against
+the rule table's 342 and Rs -10,399; `drifted` Rs 818k vs Rs 617k (+32%, A/B interval excludes
+zero). Clause by clause in `docs/EVALUATION.md`.
+
+## Results: the policy against Razorpay's own retry schedule
 The policy predicts the incremental recovery probability of each arm with a T-learner (one
 LightGBM per action, 10-member bootstrap ensemble, trained on logged data with recorded
 propensities), prices it against message cost, ops cost and contact fatigue, **acts only when the
@@ -68,7 +108,7 @@ A sensitivity sweep over every simulator assumption that moves the headline (19 
 `make sensitivity`) keeps the ranking oracle >= ML > Razorpay default in all of them; details,
 per-merchant tables and guardrail activity in `docs/EVALUATION.md`.
 
-**Off-policy evaluation (Phase 3).** From logged data alone (recorded propensities), the
+**Off-policy evaluation.** From logged data alone (recorded propensities), the
 doubly-robust estimate of each policy's value lands within 0.6-3.2% of the paired-exact truth on
 rupees for the ML policy, the rule table and Razorpay default under every variant, and its
 difference vs Razorpay default sits inside the randomized A/B interval in 9 of 9 cells; plain
@@ -78,7 +118,23 @@ IPS drifts by up to 13% where the target policy rarely matches the logged action
 ![A/B, calibrated](reports/figures/ab_calibrated.png)
 ![conservatism dial](reports/figures/z_dial.png)
 
-## Phase 4: the agent, end to end (`make demo`)
+## How it works
+```
+failure context -> predict uplift per arm (T-learner, 10-member ensemble, logged data + propensities)
+              -> net EV = uplift x amount - cost - fatigue penalty, for all five arms incl. no_action
+              -> act only if some arm's lower confidence bound clears the merchant minimum (z = 2)
+              -> guardrails (kill switch, mandatory escalation, retry budget, expired card,
+                 contact caps, quiet hours, minimum EV; machine-readable reason codes)
+              -> idempotent executor (Mock | Razorpay test mode; ledger reserves the key first)
+              -> append-only audit row (uplift[5], net_ev[5], checks, reason, result, outcome)
+              -> measured: A/B, paired exact, OPE, wasted contacts, abstention, sensitivity
+```
+Five arms, fixed: `no_action`, `retry_now`, `retry_delayed(1|3|7)`, `remind_and_retry`,
+`escalate_human`. No discount arm (ADR-002). Every retry arm is a three-attempt schedule so the
+Razorpay default is one of our own actions (ADR-006). ML picks numbers; the LLM only writes the
+explanation and is validated against the action set (ADR-009).
+
+## The agent end to end (`make demo`)
 `python scripts/run_batch.py --n 500 --inject-failure` processes 500 held-out failures through
 decide -> guardrails -> idempotent executor -> audit, with a provider 5xx injected mid-batch:
 
@@ -107,7 +163,7 @@ deterministic template. `RazorpayExecutor` maps the arms to test-mode endpoints
 What was actually proven against the live API, what is blocked by account enablement, and the
 command that regenerates each row: `docs/LIVE_VERIFICATION.md`.
 
-## Phase 1 results: baselines under three simulator variants
+## Baselines: what each policy is worth before any ML
 Per 1,000 failed payments, seed 42, 50,000 failures. `razorpay_default` is Razorpay's automatic
 retry schedule after a failed subscription charge; under the equalized attempt budget (ADR-006)
 it is exactly our `retry_delayed(1)` action (attempts at days 1, 3, 5), calibrated to the public
@@ -129,22 +185,6 @@ Under `null_uplift` no intervention has any causal effect, so the right answer i
 Regenerate: `make data && python scripts/checkpoint1.py`. Methodology and calibration:
 `docs/EVALUATION.md`.
 
-## How it works
-```
-failure context -> predict uplift per arm (T-learner, 10-member ensemble, logged data + propensities)
-              -> net EV = uplift x amount - cost - fatigue penalty, for all five arms incl. no_action
-              -> act only if some arm's lower confidence bound clears the merchant minimum (z = 2)
-              -> guardrails (kill switch, mandatory escalation, retry budget, expired card,
-                 contact caps, quiet hours, minimum EV; machine-readable reason codes)
-              -> idempotent executor (Mock | Razorpay test mode; ledger reserves the key first)
-              -> append-only audit row (uplift[5], net_ev[5], checks, reason, result, outcome)
-              -> measured: A/B, paired exact, OPE, wasted contacts, abstention, sensitivity
-```
-Five arms, fixed: `no_action`, `retry_now`, `retry_delayed(1|3|7)`, `remind_and_retry`,
-`escalate_human`. No discount arm (ADR-002). Every retry arm is a three-attempt schedule so the
-Razorpay default is one of our own actions (ADR-006). ML picks numbers; the LLM only writes the
-explanation and is validated against the action set (ADR-009).
-
 ## Run
 ```bash
 make setup         # uv sync (Python 3.11, pinned)            ~1-2 min
@@ -155,7 +195,7 @@ make dial          # conservatism dial                        ~4 min
 make sensitivity   # 19 worlds regenerated + retrained        ~15 min
 make demo          # 500-failure batch with one injected 5xx  ~5 s
 make dashboard     # Streamlit over audit + reports
-make test          # 80+ tests: guardrails, idempotency, leakage, OPE, agent, API
+make test          # 89 tests: guardrails, idempotency, leakage, OPE, agent, API
 ```
 Windows without GNU make: `.\make.ps1 <target>`. Copy `.env.example` to `.env` for Razorpay
 test keys (`COUNTERFACT_EXECUTOR=razorpay`) and an Anthropic key (live explanations,
